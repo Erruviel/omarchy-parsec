@@ -78,7 +78,7 @@ injects into that server through XTEST (`omarchy-macro play <macro>
 --display :N`), so every instance runs its macro at the same time, whatever
 has focus, and your real mouse stays free.
 
-`bin/parsec-xfit` watches each such server and does the three things a window
+`bin/parsec-xfit` watches each such server and does the four things a window
 manager would otherwise do there:
 
 - keeps Parsec's window the size of the nested screen when you resize or
@@ -90,7 +90,13 @@ manager would otherwise do there:
   shows its empty cursor, i.e. inside a game. Without that, Xwayland hands the
   game accelerated mouse deltas rounded to whole pixels, slow movements get
   lost and the mouse feels sluggish; with it, the game gets the same exact
-  relative motion as under the regular Xwayland.
+  relative motion as under the regular Xwayland;
+- grabs both Super keys (`XGrabKey`) so Parsec never sees them. Hyprland
+  swallows the key of a bind but hands the Super press and release to the
+  focused window; forwarded to a Windows guest that is a bare Win key (Start
+  menu), and with a macro typing at the same time Win+E (Explorer) and
+  friends. While Super is held, every key, the macro's included, goes to the
+  grab instead of Parsec.
 
 Visible, a nested instance presents at the same 60 fps as a plain one and
 decodes the stream the same way.

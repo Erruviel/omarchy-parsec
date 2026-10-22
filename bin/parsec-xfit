@@ -25,6 +25,14 @@ A rootful Xwayland has no window manager. Two things go wrong without one:
   client also warps the pointer. So the pointer is warped once, to where it
   already is: the aim stays put (a warp to the centre, tried once, made the
   farming macro click the wrong spot).
+- The Super key. Hyprland swallows the key of a bind (the "3" of SUPER+3)
+  but delivers the Super press and release to the focused window like any
+  other key. Parsec forwards it, the Windows guest sees a bare Win key and
+  opens the Start menu; and when a macro is typing meanwhile, Win+E and
+  friends. So both Super keys are grabbed here: a passive XGrabKey turns into
+  an active keyboard grab for as long as Super is held, and every key event
+  in that time (the Super itself, the macro's XTEST keys) comes to this
+  client instead of Parsec.
 """
 import ctypes
 import ctypes.util
@@ -127,6 +135,15 @@ XF.XFixesShowCursor.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 X.XWarpPointer.argtypes = [
     ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_int, ctypes.c_int,
 ]
+X.XStringToKeysym.argtypes = [ctypes.c_char_p]
+X.XStringToKeysym.restype = ctypes.c_ulong
+X.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+X.XKeysymToKeycode.restype = ctypes.c_ubyte
+X.XGrabKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+X.XPending.argtypes = [ctypes.c_void_p]
+X.XNextEvent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+ANY_MODIFIER = 1 << 15
+GRAB_MODE_ASYNC = 1
 X.XQueryPointer.argtypes = [
     ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
     ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
@@ -191,6 +208,26 @@ class CursorShadow:
             XF.XFixesShowCursor(self.dpy, self.hidden_on)
             self.hidden_on = 0
             X.XSync(self.dpy, 0)
+
+class KeyTrap:
+    """Keep the Super keys (and whatever is typed while one is held) from Parsec."""
+
+    KEYS = ("Super_L", "Super_R")
+
+    def __init__(self, dpy) -> None:
+        self.dpy = dpy
+        self.root = X.XDefaultRootWindow(dpy)
+        self.event = ctypes.create_string_buffer(256)
+        for name in self.KEYS:
+            code = X.XKeysymToKeycode(dpy, X.XStringToKeysym(name.encode()))
+            if code:
+                X.XGrabKey(dpy, code, ANY_MODIFIER, self.root, 0, GRAB_MODE_ASYNC, GRAB_MODE_ASYNC)
+        X.XSync(dpy, 0)
+
+    def drain(self) -> None:
+        while X.XPending(self.dpy):
+            X.XNextEvent(self.dpy, self.event)
+
 
 class FakeWM:
     """EWMH announcements, so clients believe a window manager is present."""
@@ -279,6 +316,7 @@ def main() -> int:
         return 1
     wm = FakeWM(dpy)
     shadow = CursorShadow(dpy)
+    trap = KeyTrap(dpy)
     if not watch:
         fit_once(dpy, wm_class.encode(), wm, shadow)
         return 0
@@ -292,6 +330,7 @@ def main() -> int:
                 fit_once(dpy, wm_class.encode(), wm, shadow)
             elif wm.active:
                 shadow.update(wm.active)
+            trap.drain()
         except Exception:  # noqa: BLE001 - the server went away; the wrapper ends us
             return 0
         tick += 1
