@@ -103,9 +103,8 @@ editor offers a dropdown of your macros). Then:
 - **Macro** in the panel, or `parsec-multi macro-toggle <name>`, starts the
   instance's own run; pressing again stops only that run.
 - `parsec-multi macro-toggle active` does it for the instance whose window has
-  focus. That is what the `SUPER + ALT + A` key below runs.
-- `omarchy-macro stop` ends every run (`SUPER + ALT + M` in the default
-  omarchy-macro setup).
+  focus. That is what the `Pause` key below runs.
+- `omarchy-macro stop` ends every run (`Insert` below).
 
 An instance with its own X server keeps its macro running whatever has focus.
 An instance without one gets the macro pinned to its window
@@ -128,16 +127,27 @@ hl.config({ misc = { render_unfocused_fps = 60 } })
 
 ```lua
 -- Start/stop the macro of the Parsec instance whose window has focus.
-o.bind("SUPER + ALT + A", "Toggle the macro of this Parsec instance",
+-- Pause is Fn+B on Dell keyboards.
+o.bind("Pause", "Toggle the macro of this Parsec instance",
   "parsec-multi macro-toggle active", { dont_inhibit = true, allow_input_capture = true })
 
--- Next Parsec window. Omarchy uses this key for "next window in group", hence
--- rebind. A macro holding a button keeps pointer focus in its window, so the
--- macros are asked to let go first; the one you leave waits, the one you
--- reach takes over (plain-window instances only; nested ones never pause).
-o.rebind("SUPER + ALT + Tab", "Next Parsec window", "parsec-multi focus-next",
+-- Stop every macro.
+o.bind("Insert", "Stop macro", "omarchy-macro stop",
+  { dont_inhibit = true, allow_input_capture = true })
+
+-- Next Parsec window. A macro holding a button keeps pointer focus in its
+-- window, so the macros are asked to let go first; the one you leave waits,
+-- the one you reach takes over (plain-window instances only; nested ones
+-- never pause). Scroll_Lock is Fn+S on Dell keyboards.
+o.bind("Scroll_Lock", "Next Parsec window", "parsec-multi focus-next",
   { dont_inhibit = true, allow_input_capture = true })
 ```
+
+Use keys **without a modifier**. Hyprland swallows the bound key itself, but a
+held Super, Alt, Ctrl or Shift still reaches the Parsec guest: with
+`SUPER + ALT + A` Windows sees the Win key go down and up and opens the Start
+menu, and a macro that starts typing while Win is still held opens Explorer
+(Win+E) and friends. Any unmodified key the guest never needs will do.
 
 The options keep the keys working while Parsec has the keyboard captured
 (immersive mode, a game that locks the pointer).
