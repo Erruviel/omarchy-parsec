@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# parsec-nested NAME DISPLAY DIR [URL]
+#
+# One Parsec instance inside its own rootful Xwayland. The X server is one
+# window on the Hyprland side; inside it, Parsec is alone and the server's
+# own pointer and keyboard are what omarchy-macro drives through XTEST, so
+# the instance is played whatever has focus and the real mouse stays free.
+#
+# Hyprland must keep the window rendered while hidden, or Parsec stalls at
+# ~1 fps on other workspaces (see README, "render_unfocused").
+#
+# DIR is the config directory bind-mounted over ~/.parsec (the word "main"
+# means the regular ~/.parsec, no mount). The Xwayland is stopped when Parsec
+# exits; killing this script stops both.
+set -euo pipefail
+
+name=${1:?name} display=${2:?display} dir=${3:?dir} url=${4:-}
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PARSEC=${PARSEC:-/usr/bin/parsecd}
+MAIN=$HOME/.parsec
+LOGDIR=${XDG_CACHE_HOME:-$HOME/.cache}/parsec-multi
+mkdir -p "$LOGDIR"
+log=$LOGDIR/$name.log
+
+[[ $display =~ ^:[0-9]+$ ]] || { echo "bad display: $display" >&2; exit 2; }
+num=${display#:}
+if [[ -S /tmp/.X11-unix/X$num ]]; then
+  echo "display $display is already in use" >&2
+  exit 1
+fi
+
+# No -rootless: rootful is the default. -noreset keeps the server across
+# Parsec restarting itself (it does, on client updates).
+Xwayland "$display" -geometry "${PARSEC_NESTED_GEOMETRY:-1600x1000}" -noreset >>"$log" 2>&1 &
+xw=$!
+for _ in $(seq 50); do
+  [[ -S /tmp/.X11-unix/X$num ]] && break
+  kill -0 "$xw" 2>/dev/null || { echo "Xwayland $display died, see $log" >&2; exit 1; }
+  sleep 0.1
+done
+
+cleanup() {
+  kill "$fit" "$parsec" 2>/dev/null || true
+  kill "$xw" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+export DISPLAY=$display
+if [[ $dir == main ]]; then
+  "$PARSEC" $url >>"$log" 2>&1 &
+else
+  bwrap --dev-bind / / --bind "$dir" "$MAIN" "$PARSEC" $url >>"$log" 2>&1 &
+fi
+parsec=$!
+
+# Parsec sizes its window for the monitor it thinks it has; keep it filling
+# the nested screen instead, now and whenever the Hyprland window is resized.
+python3 "$here/parsec-xfit" --watch "$display" parsecd >>"$log" 2>&1 &
+fit=$!
+
+wait "$parsec" || true

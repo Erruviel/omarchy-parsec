@@ -1,0 +1,503 @@
+#!/bin/bash
+# State and actions for the erruviel.parsec bar widget.
+#
+#   parsec-panel                 -> JSON state of every configured instance
+#   parsec-panel launch <name>   -> start that instance on its workspace
+#   parsec-panel focus <name>    -> jump to its window
+#   parsec-panel focus-next      -> jump to the next Parsec window (bind it to a key)
+#   parsec-panel stop <name>     -> terminate it (and its macro)
+#   parsec-panel macro-start <name> / macro-stop <name> / macro-toggle <name>
+#                                -> run the instance's macro; <name> may be
+#                                   "active" for the instance that has focus
+#   parsec-panel edit            -> open the instance list in the editor
+#   parsec-panel add key=value...        -> append an instance (name=, label=,
+#                                           workspace=, peer_id=, macro=, nested=1|0)
+#   parsec-panel set <name> key=value... -> change those fields of an instance
+#   parsec-panel remove <name>           -> drop it from the list (must be stopped)
+#
+# Instances live in ~/.config/parsec-multi/instances.json:
+#   [{ "name": "vm1", "label": "VM 1", "workspace": 3, "peer_id": "", "macro": "RYL-Farma", "display": ":11" }, ...]
+# "macro" names an omarchy-macro macro; each instance runs its own copy of it.
+# "display" (":10", ":11", ...) runs the instance inside its own rootful
+# Xwayland (see parsec-nested): that server has its own pointer and keyboard,
+# so the macro is injected there with XTEST (omarchy-macro play --display)
+# and every instance is driven at once, whatever has focus, with the real
+# mouse free. Without "display" the instance is a plain XWayland window and
+# its macro is pinned to that window (play --window address:...), which only
+# runs while the window has focus.
+# "main" is the regular Parsec (~/.parsec). Every other name gets its own
+# config dir under ~/.parsec-instances/<name>, bind-mounted over ~/.parsec
+# with bubblewrap so Parsec's single-instance lock does not see the others.
+set -o pipefail
+
+CONFIG=$HOME/.config/parsec-multi/instances.json
+MAIN=$HOME/.parsec
+INSTANCES=$HOME/.parsec-instances
+PARSEC=/usr/bin/parsecd
+
+valid_name() { [[ $1 =~ ^[A-Za-z0-9_-]{1,32}$ ]]; }
+valid_peer() { [[ -z $1 || $1 =~ ^[A-Za-z0-9_-]{1,64}$ ]]; }
+valid_ws()   { [[ -z $1 || $1 =~ ^[0-9]{1,2}$ ]]; }
+valid_disp() { [[ -z $1 || $1 =~ ^:[0-9]{1,3}$ ]]; }
+
+display_of() { # name -> ":N" or empty
+  local d
+  d=$(entry "$1" | jq -r '.display // ""') || d=""
+  valid_disp "$d" && [[ -n $d ]] && echo "$d"
+}
+
+# ":N" only while that instance's own X server is up; an instance that was
+# started the plain way before "display" was set keeps working the old way
+# until it is relaunched.
+live_display_of() {
+  local d; d=$(display_of "$1") || return 1
+  [[ -n $d && -S /tmp/.X11-unix/X${d#:} ]] && echo "$d"
+}
+
+entry() { # name -> json object from config (or empty)
+  [[ -r $CONFIG ]] || return 1
+  jq -ce --arg n "$1" 'map(select(.name == $n))[0] // empty' "$CONFIG" 2>/dev/null
+}
+
+base_dir() { [[ $1 == main ]] && echo "$MAIN" || echo "$INSTANCES/$1"; }
+
+# Which instance a parsecd pid belongs to: the bind mount over ~/.parsec in
+# its mount namespace names the source dir; no mount means the regular one.
+instance_of_pid() {
+  local src
+  src=$(awk -v t="$MAIN" '$5 == t { print $4; exit }' "/proc/$1/mountinfo" 2>/dev/null)
+  if [[ $src == */.parsec-instances/* ]]; then echo "${src##*/}"; else echo main; fi
+}
+
+# Connection state from the tail of the instance log: Parsec logs status 20
+# when a session comes up and -3 when it ends; "net = BUD|ip|port" names the
+# host. Prints "<connected 0/1> <host>".
+conn_state() {
+  local log=$1/log.txt
+  [[ -r $log ]] || { echo "0 "; return; }
+  tail -n 300 "$log" | awk '
+    /Client status changed to: 20/ { c = 1; host = "" }
+    /Client status changed to: -3/ { c = 0; host = "" }
+    /Client disconnected/          { c = 0; host = "" }
+    /Parsec: Started/              { c = 0; host = "" }
+    /net +=/ { n = split($0, a, "|"); if (n >= 2) host = a[2]; sub(/^::ffff:/, "", host) }
+    END { printf "%d %s\n", c, host }'
+}
+
+status() {
+  local cfg='[]'
+  [[ -r $CONFIG ]] && cfg=$(jq -c 'if type == "array" then . else [] end' "$CONFIG" 2>/dev/null || echo '[]')
+  # Make sure "main" is listed even if the config forgot it.
+  cfg=$(jq -c 'if any(.name == "main") then . else [{name:"main",label:"Parsec"}] + . end' <<<"$cfg")
+
+  # Running processes: name -> pid
+  local -A pid_of
+  local p
+  for p in $(pgrep -x parsecd); do
+    pid_of[$(instance_of_pid "$p")]=$p
+  done
+
+  # Windows: pid -> address/workspace/title
+  local wins='[]'
+  # A nested instance shows up as its Xwayland window ("Xwayland on :N"),
+  # matched by display rather than by pid.
+  wins=$(hyprctl -j clients 2>/dev/null | jq -c '[.[] | select(.class == "parsecd" or (.class == "org.freedesktop.Xwayland" and (.title | test("^Xwayland on :[0-9]+$")))) | {pid, address, ws: .workspace.id, title, display: (if .class == "parsecd" then "" else (.title | ltrimstr("Xwayland on ")) end)}]' 2>/dev/null || echo '[]')
+
+  # Macro players, one read for all instances: slot is the window address
+  # without its 0x prefix.
+  local players='[]' macro_dir=$HOME/.config/omarchy/macros macro_names='[]'
+  if command -v omarchy-macro >/dev/null; then
+    local mstatus; mstatus=$(omarchy-macro status 2>/dev/null)
+    players=$(jq -c '.playing.players // []' <<<"$mstatus" 2>/dev/null || echo '[]')
+    macro_names=$(jq -c '[.macros[]?.name] // []' <<<"$mstatus" 2>/dev/null || echo '[]')
+  fi
+
+  local out='[]'
+  local n
+  for n in $(jq -r '.[].name' <<<"$cfg"); do
+    valid_name "$n" || continue
+    local e pid="" conn host base
+    e=$(jq -c --arg n "$n" 'map(select(.name == $n))[0]' <<<"$cfg")
+    base=$(base_dir "$n")
+    pid=${pid_of[$n]:-}
+    read -r conn host < <(conn_state "$base")
+    [[ -z $pid ]] && { conn=0; host=""; }
+    local macro macro_known=0 disp
+    disp=$(jq -r '.display // ""' <<<"$e"); valid_disp "$disp" || disp=""
+    macro=$(jq -r '.macro // ""' <<<"$e")
+    [[ $macro =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || macro=""
+    [[ -n $macro && -r $macro_dir/$macro.json ]] && macro_known=1
+    out=$(jq -c --argjson e "$e" --arg pid "$pid" --argjson conn "$conn" --arg host "$host" \
+      --argjson wins "$wins" --arg loggedin "$([[ -s $base/user.bin ]] && echo 1 || echo 0)" \
+      --argjson players "$players" --arg macro "$macro" --arg macro_known "$macro_known" --arg disp "$disp" '
+      . + [ ($wins | map(select(.display == "" and (.pid | tostring) == $pid))[0] // {}) as $plain |
+        (if $disp != "" then ($wins | map(select(.display == $disp))[0] // $plain) else $plain end) as $w |
+        (if $disp != "" and ($w.display // "") == $disp then ("x" + ($disp | ltrimstr(":")))
+         else (($w.address // "") | ascii_downcase | ltrimstr("0x")) end) as $slot |
+        ($players | map(select(.slot == $slot and $slot != ""))[0] // null) as $pl |
+        { name: $e.name,
+          macro: $macro,
+          macroState: (if $macro == "" then ""
+                       elif $macro_known != "1" then "missing"
+                       elif $pl == null then "off"
+                       elif $pl.paused then "waiting" else "running" end),
+          label: ($e.label // $e.name),
+          workspace: ($e.workspace // null),
+          peer_id: ($e.peer_id // ""),
+          main: ($e.name == "main"),
+          display: $disp,
+          nested: ($disp != "" and ($w.display // "") == $disp),
+          loggedIn: ($loggedin == "1"),
+          running: ($pid != ""),
+          pid: ($pid | if . == "" then null else tonumber end),
+          connected: ($conn == 1),
+          host: $host,
+          address: ($w.address // ""),
+          winWorkspace: ($w.ws // null) } ]' <<<"$out")
+  done
+
+  jq -nc --argjson i "$out" --arg installed "$([[ -x $PARSEC ]] && echo 1 || echo 0)" \
+    --arg bwrap "$(command -v bwrap >/dev/null && echo 1 || echo 0)" --argjson macros "$macro_names" \
+    '{installed: ($installed == "1"), bwrap: ($bwrap == "1"), instances: $i, macros: $macros}'
+}
+
+# ------------------------------------------------------------- list editing ---
+# add/set/remove rewrite instances.json in place so the panel can manage the
+# list without an editor. Fields come as key=value words; a missing key is
+# left alone (set) or defaulted (add). nested=1 gives the instance its own
+# X display, the lowest :10+ not taken by another instance.
+
+fail() { echo "$*" >&2; [[ -t 1 ]] || notify-send -a Parsec "Parsec instances" "$*" 2>/dev/null; exit 1; }
+
+load_cfg() {
+  [[ -r $CONFIG ]] && jq -c 'if type == "array" then . else [] end' "$CONFIG" 2>/dev/null || echo '[]'
+}
+
+save_cfg() { # json -> file, atomically
+  local tmp; mkdir -p "$(dirname "$CONFIG")"
+  tmp=$(mktemp "$(dirname "$CONFIG")/.instances.XXXXXX") || fail "cannot write $CONFIG"
+  jq --indent 2 . <<<"$1" > "$tmp" && mv "$tmp" "$CONFIG"
+}
+
+next_display() { # lowest :N (N>=10) not used in the config, except by $1
+  local used n=10
+  used=$(load_cfg | jq -r --arg me "${1:-}" '.[] | select(.name != $me) | .display // "" | ltrimstr(":")')
+  while grep -qx "$n" <<<"$used"; do n=$((n + 1)); done
+  echo ":$n"
+}
+
+# Turns key=value words into a JSON patch, validating each value.
+patch_from_args() {
+  local patch='{}' kv key val
+  for kv in "$@"; do
+    key=${kv%%=*}; val=${kv#*=}
+    case $key in
+      name)      valid_name "$val" || fail "bad name '$val' (letters, digits, - and _ only)" ;;
+      label)     [[ ${#val} -le 64 ]] || fail "label too long" ;;
+      workspace) [[ -z $val || $val =~ ^[0-9]{1,2}$ ]] || fail "workspace must be a number" ;;
+      peer_id)   valid_peer "$val" || fail "bad peer id" ;;
+      macro)     [[ -z $val || $val =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "bad macro name" ;;
+      nested)    [[ $val == 0 || $val == 1 ]] || fail "nested must be 0 or 1" ;;
+      *) fail "unknown field '$key'" ;;
+    esac
+    patch=$(jq -c --arg k "$key" --arg v "$val" '. + {($k): $v}' <<<"$patch")
+  done
+  echo "$patch"
+}
+
+# Applies a patch to one entry object: typed fields, display handled from nested.
+apply_patch() { # entry patch display-for-nested -> entry
+  jq -c --argjson p "$2" --arg disp "$3" '
+    . + ($p | with_entries(select(.key != "nested")))
+    | (if ($p.workspace // null) != null then .workspace = (if $p.workspace == "" then null else ($p.workspace | tonumber) end) else . end)
+    | (if ($p.nested // null) != null then (if $p.nested == "1" then .display = $disp else del(.display) end) else . end)
+    | with_entries(select(.value != null))' <<<"$1"
+}
+
+add_instance() {
+  local patch cfg name entry disp
+  patch=$(patch_from_args "$@") || exit 1
+  name=$(jq -r '.name // ""' <<<"$patch"); [[ -n $name ]] || fail "name is required"
+  cfg=$(load_cfg)
+  jq -e --arg n "$name" 'any(.name == $n)' <<<"$cfg" >/dev/null && fail "'$name' already exists"
+  disp=$(next_display "$name")
+  entry=$(apply_patch "{\"name\":\"$name\",\"label\":\"$name\",\"peer_id\":\"\"}" "$patch" "$disp")
+  save_cfg "$(jq -c --argjson e "$entry" '. + [$e]' <<<"$cfg")"
+  echo "added $name"
+}
+
+set_instance() {
+  local n=$1; shift
+  valid_name "$n" || fail "bad name"
+  local patch cfg entry disp
+  patch=$(patch_from_args "$@") || exit 1
+  jq -e 'has("name")' <<<"$patch" >/dev/null && fail "an instance cannot be renamed; add a new one"
+  cfg=$(load_cfg)
+  entry=$(jq -c --arg n "$n" 'map(select(.name == $n))[0] // empty' <<<"$cfg"); [[ -n $entry ]] || fail "no instance '$n'"
+  disp=$(jq -r '.display // ""' <<<"$entry"); [[ -n $disp ]] || disp=$(next_display "$n")
+  entry=$(apply_patch "$entry" "$patch" "$disp")
+  save_cfg "$(jq -c --arg n "$n" --argjson e "$entry" 'map(if .name == $n then $e else . end)' <<<"$cfg")"
+  echo "updated $n"
+}
+
+remove_instance() {
+  local n=$1
+  valid_name "$n" || fail "bad name"
+  [[ $n == main ]] && fail "'main' is the regular Parsec and stays"
+  local cfg; cfg=$(load_cfg)
+  jq -e --arg n "$n" 'any(.name == $n)' <<<"$cfg" >/dev/null || fail "no instance '$n'"
+  [[ -n $(window_address "$n") ]] && fail "'$n' is running; stop it first"
+  save_cfg "$(jq -c --arg n "$n" 'map(select(.name != $n))' <<<"$cfg")"
+  echo "removed $n (its files in $INSTANCES/$n are kept)"
+}
+
+launch() {
+  local n=$1
+  valid_name "$n" || { echo "bad name" >&2; exit 1; }
+  local e ws peer base cmd rule=""
+  e=$(entry "$n") || e='{}'
+  ws=$(jq -r '.workspace // empty' <<<"$e"); peer=$(jq -r '.peer_id // empty' <<<"$e")
+  valid_ws "$ws" || ws=""
+  valid_peer "$peer" || peer=""
+  base=$(base_dir "$n")
+  local url="" disp
+  [[ -n $peer ]] && url="parsec://peer_id=$peer"
+  disp=$(display_of "$n")
+  if [[ $n != main ]]; then
+    mkdir -p "$base"
+    local f
+    for f in "$MAIN"/parsecd-*.so "$MAIN"/appdata.json "$MAIN"/hotkey.json; do
+      [[ -e $f && ! -e $base/$(basename "$f") ]] && cp "$f" "$base/"
+    done
+  fi
+  if [[ -n $disp ]]; then
+    local here; here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    cmd="$here/parsec-nested $n $disp $([[ $n == main ]] && echo main || echo "$base") $url"
+  elif [[ $n == main ]]; then
+    cmd="$PARSEC $url"
+  else
+    cmd="bwrap --dev-bind / / --bind $base $MAIN $PARSEC $url"
+  fi
+  [[ -n $ws ]] && rule="[workspace $ws] "
+  hyprctl eval "hl.exec_cmd(\"$rule$cmd\")" >/dev/null
+}
+
+# Hyprland keeps focus where it is while any mouse button is down, and a
+# farming macro holds one. Ask the macros to let go first, then switch.
+# A short trace of every switch, so "it did not switch" can be told apart
+# from "the key never fired". Kept small: the file is truncated past 200 KB.
+LOG=${XDG_CACHE_HOME:-$HOME/.cache}/parsec-multi.log
+trace() {
+  [[ -f $LOG && $(stat -c %s "$LOG" 2>/dev/null || echo 0) -gt 204800 ]] && : > "$LOG"
+  printf '%s %s\n' "$(date +%H:%M:%S.%3N)" "$*" >> "$LOG"
+}
+
+active_address() { hyprctl -j activewindow 2>/dev/null | jq -r '.address // ""'; }
+
+# Parsec windows as "<instance> <address>" lines, in the configured order
+# (main first), unknown instances last. One hyprctl call and no log parsing:
+# this sits on the key-press path, where `status` would cost most of a second.
+# The first line is "@focused <address>" (the window Hyprland lists as focus
+# history 0, any class), so a switch needs no second round trip to Hyprland.
+parsec_windows() {
+  local cfg='[]' order n pid addr focused active=""
+  [[ -r $CONFIG ]] && cfg=$(jq -c 'if type == "array" then . else [] end' "$CONFIG" 2>/dev/null || echo '[]')
+  order=$(jq -r '(["main"] + map(.name)) | reduce .[] as $n ([]; if index($n) then . else . + [$n] end) | .[]' <<<"$cfg")
+  local -A addr_of
+  local -A name_of_disp
+  for n in $order; do
+    local d; d=$(jq -r --arg n "$n" 'map(select(.name == $n))[0].display // ""' <<<"$cfg")
+    valid_disp "$d" && [[ -n $d ]] && name_of_disp[$d]=$n
+  done
+  local -A nested_of
+  while read -r pid addr focused disp; do
+    [[ $focused == 0 ]] && active=$addr
+    if [[ -n $disp && $disp != - ]]; then
+      [[ -n ${name_of_disp[$disp]:-} ]] && nested_of[${name_of_disp[$disp]}]=$addr
+      continue
+    fi
+    [[ $pid =~ ^[0-9]+$ ]] || continue
+    addr_of[$(instance_of_pid "$pid")]=$addr
+  done < <(hyprctl -j clients 2>/dev/null | jq -r '.[] | select(.class == "parsecd" or .focusHistoryID == 0 or (.class == "org.freedesktop.Xwayland" and (.title | test("^Xwayland on :[0-9]+$")))) | "\(if .class == "parsecd" then .pid else "-" end) \(.address) \(.focusHistoryID) \(if .class == "org.freedesktop.Xwayland" then (.title | ltrimstr("Xwayland on ")) else "-" end)"')
+  for n in "${!nested_of[@]}"; do addr_of[$n]=${nested_of[$n]}; done
+  echo "@focused $active"
+  for n in $order; do
+    [[ -n ${addr_of[$n]:-} ]] && { echo "$n ${addr_of[$n]}"; unset "addr_of[$n]"; }
+  done
+  for n in "${!addr_of[@]}"; do echo "$n ${addr_of[$n]}"; done
+}
+
+# SIGUSR1 to every omarchy-macro player: the same thing `omarchy-macro yield`
+# does, without paying for a Python start-up on every key press.
+yield_macros() {
+  local f pid n=0 dir
+  for dir in "${XDG_RUNTIME_DIR:-/nonexistent}/omarchy-macro" "/tmp/omarchy-macro-$(id -u)" "/tmp/omarchy-macro-$(id -u)/omarchy-macro"; do
+    for f in "$dir"/player*.pid; do
+      [[ -r $f ]] || continue
+      pid=$(<"$f")
+      [[ $pid =~ ^[0-9]+$ ]] && kill -USR1 "$pid" 2>/dev/null && ((n++))
+    done
+  done
+  ((n > 0))
+}
+
+# A farming macro holds a mouse button, so the macros are asked to let go
+# first; Hyprland's focus dispatcher then moves focus even across workspaces.
+# The macro left behind waits for its window, the one arrived at resumes.
+focus_window() {
+  local addr=$1 rc
+  [[ $addr =~ ^0x[0-9a-f]+$ ]] || return 1
+  trace "focus_window target=$addr"
+  # Released buttons reach the old window before focus moves. No wait: the
+  # player drops them within one step, and Hyprland's focus dispatcher works
+  # even while a button is still down.
+  yield_macros && trace "yielded"
+  hyprctl eval "hl.dispatch(hl.dsp.focus({ window = \"address:$addr\" }))" >/dev/null; rc=$?
+  trace "focus dispatched rc=$rc"
+  { sleep 0.3; trace "now active=$(active_address)"; } >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+focus_next() {
+  # One switch at a time: a key held or pressed twice must not queue up jumps.
+  local lock=${XDG_RUNTIME_DIR:-/tmp}/parsec-multi.focus.lock
+  exec 9>"$lock"
+  flock -n 9 || { trace "focus_next: busy, press ignored"; exit 0; }
+  local -a addrs
+  local active next i list
+  list=$(parsec_windows)
+  mapfile -t addrs < <(awk '$1 != "@focused" { print $2 }' <<<"$list")
+  ((${#addrs[@]})) || { trace "focus_next: no Parsec windows"; exit 1; }
+  active=$(awk '$1 == "@focused" { print $2; exit }' <<<"$list")
+  trace "focus_next active=$active candidates=${addrs[*]}"
+  next=${addrs[0]}
+  for ((i = 0; i < ${#addrs[@]}; i++)); do
+    [[ ${addrs[i]} == "$active" ]] && { next=${addrs[(i + 1) % ${#addrs[@]}]}; break; }
+  done
+  focus_window "$next"
+}
+
+focus() {
+  local n=$1 addr
+  valid_name "$n" || exit 1
+  addr=$(window_address "$n")
+  if [[ $addr =~ ^0x[0-9a-f]+$ ]]; then
+    focus_window "$addr"
+  else
+    local ws
+    ws=$(entry "$n" | jq -r '.workspace // empty')
+    valid_ws "$ws" && [[ -n $ws ]] && hyprctl eval "hl.dispatch(hl.dsp.focus({ workspace = \"$ws\" }))" >/dev/null
+  fi
+}
+
+window_address() { # name -> 0x... of its window, or empty
+  parsec_windows | awk -v n="$1" '$1 == n { print $2; exit }'
+}
+
+stop() {
+  local n=$1 p
+  valid_name "$n" || exit 1
+  macro_stop "$n" >/dev/null 2>&1 || true
+  local disp; disp=$(live_display_of "$n")
+  if [[ -n $disp ]]; then
+    # The wrapper takes Parsec and its Xwayland down with it.
+    pkill -f "parsec-nested $n $disp " 2>/dev/null
+    return
+  fi
+  for p in $(pgrep -x parsecd); do
+    [[ $(instance_of_pid "$p") == "$n" ]] && kill "$p"
+  done
+}
+
+# "active" as an instance name: the one whose window has focus.
+resolve_name() {
+  local n=$1 active
+  if [[ $n == active ]]; then
+    active=$(parsec_windows | awk '$1 == "@focused" { print $2; exit }')
+    n=$(parsec_windows | awk -v a="$active" '$1 != "@focused" && $2 == a { print $1; exit }')
+    [[ -n $n ]] || { echo "the focused window is not a Parsec instance" >&2; exit 1; }
+  fi
+  echo "$n"
+}
+
+# The instance's macro, pinned to its window: a second instance gets a second
+# player, and only the focused one drives anything (omarchy-macro handles
+# pausing the others and letting their buttons go).
+macro_start() {
+  local n e macro addr disp
+  n=$(resolve_name "$1") || exit 1
+  valid_name "$n" || exit 1
+  e=$(entry "$n") || e='{}'
+  macro=$(jq -r '.macro // ""' <<<"$e")
+  [[ $macro =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "no macro configured for $n" >&2; exit 1; }
+  disp=$(live_display_of "$n")
+  if [[ -n $disp ]]; then
+    setsid -f omarchy-macro play "$macro" --display "$disp" >/dev/null 2>&1 </dev/null
+    return
+  fi
+  addr=$(window_address "$n")
+  [[ $addr =~ ^0x[0-9a-f]+$ ]] || { echo "$n has no window" >&2; exit 1; }
+  setsid -f omarchy-macro play "$macro" --window "address:$addr" >/dev/null 2>&1 </dev/null
+}
+
+macro_stop() {
+  local n addr disp
+  n=$(resolve_name "$1") || exit 1
+  valid_name "$n" || exit 1
+  disp=$(live_display_of "$n")
+  if [[ -n $disp ]]; then
+    omarchy-macro stop --display "$disp" >/dev/null 2>&1
+    return
+  fi
+  addr=$(window_address "$n")
+  [[ $addr =~ ^0x[0-9a-f]+$ ]] || exit 1
+  omarchy-macro stop --window "address:$addr" >/dev/null 2>&1
+}
+
+macro_toggle() {
+  local n state
+  n=$(resolve_name "$1") || exit 1
+  valid_name "$n" || exit 1
+  state=$(status | jq -r --arg n "$n" '.instances[] | select(.name == $n) | .macroState')
+  case $state in
+    running|waiting) macro_stop "$n" ;;
+    off) macro_start "$n" ;;
+    *) echo "$n: macro state '$state'" >&2; exit 1 ;;
+  esac
+}
+
+edit() {
+  [[ -e $CONFIG ]] || { mkdir -p "$(dirname "$CONFIG")"; echo '[]' > "$CONFIG"; }
+  omarchy-launch-editor "$CONFIG"
+}
+
+# display <name> <:N|none>: switch an instance between its own X server and
+# the plain window. Takes effect on its next launch.
+set_display() {
+  local n=$1 d=$2 tmp
+  valid_name "$n" || exit 1
+  [[ $d == none ]] && d=""
+  valid_disp "$d" || { echo "display must be :N or none" >&2; exit 1; }
+  [[ -r $CONFIG ]] || { echo "no $CONFIG" >&2; exit 1; }
+  tmp=$(mktemp) && jq --arg n "$n" --arg d "$d" \
+    'map(if .name == $n then (if $d == "" then del(.display) else . + {display: $d} end) else . end)' \
+    "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
+  echo "$n: display ${d:-none} (relaunch the instance to apply)"
+}
+
+case ${1:-status} in
+  status) status ;;
+  launch) launch "$2" ;;
+  focus)  focus "$2" ;;
+  focus-next) focus_next ;;
+  stop)   stop "$2" ;;
+  macro-start)  macro_start "$2" ;;
+  macro-stop)   macro_stop "$2" ;;
+  macro-toggle) macro_toggle "$2" ;;
+  edit)   edit ;;
+  display) set_display "$2" "$3" ;;
+  add)    shift; add_instance "$@" ;;
+  set)    n=$2; shift 2; set_instance "$n" "$@" ;;
+  remove) remove_instance "$2" ;;
+  *) echo "usage: parsec-panel [status|launch <name>|focus <name>|focus-next|stop <name>|macro-start <name>|macro-stop <name>|macro-toggle <name>|display <name> <:N|none>|add k=v..|set <name> k=v..|remove <name>|edit]" >&2; exit 2 ;;
+esac

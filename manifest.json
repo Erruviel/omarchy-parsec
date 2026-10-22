@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "erruviel.parsec",
+  "name": "Parsec",
+  "version": "1.0.0",
+  "author": "Erruviel",
+  "license": "MIT",
+  "description": "Launch and track several Parsec clients, one per workspace",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "shell/ParsecPanel.qml"
+  },
+  "barWidget": {
+    "displayName": "Parsec",
+    "description": "One-click launch of multiple Parsec instances, each on its own workspace, with connection status",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "interval": 5,
+      "showCount": true
+    },
+    "schema": [
+      {
+        "key": "interval",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 2,
+        "max": 120,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "showCount",
+        "type": "boolean",
+        "label": "Show connected count in the bar",
+        "defaultValue": true
+      }
+    ]
+  }
+}

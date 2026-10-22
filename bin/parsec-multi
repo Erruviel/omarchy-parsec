@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# CLI front for the erruviel.parsec Omarchy plugin: everything the panel does.
+#   parsec-multi                         -> state of every instance as JSON
+#   parsec-multi <name>                  -> launch that instance
+#   parsec-multi focus|stop <name>       -> jump to / close an instance
+#   parsec-multi focus-next              -> next Parsec window (SUPER+ALT+Tab)
+#   parsec-multi macro-toggle <name|active>
+#   parsec-multi add|set|remove|display  -> edit the instance list
+# Instances: ~/.config/parsec-multi/instances.json
+S=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/parsec-panel
+[[ -x $S ]] || S="$HOME/.config/omarchy/plugins/erruviel.parsec/bin/parsec-panel"
+case ${1:-} in
+  "") exec "$S" status ;;
+  status|edit|focus|focus-next|stop|launch|macro-start|macro-stop|macro-toggle|display|add|set|remove) exec "$S" "$@" ;;
+  *) exec "$S" launch "$1" ;;
+esac
