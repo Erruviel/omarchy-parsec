@@ -30,8 +30,11 @@ if [[ -S /tmp/.X11-unix/X$num ]]; then
 fi
 
 # No -rootless: rootful is the default. -noreset keeps the server across
-# Parsec restarting itself (it does, on client updates).
-Xwayland "$display" -geometry "${PARSEC_NESTED_GEOMETRY:-1600x1000}" -noreset >>"$log" 2>&1 &
+# Parsec restarting itself (it does, on client updates). -hidpi gives the
+# server the monitor's real pixels instead of the scaled-down logical size,
+# so the stream is not shrunk: small text (the minimap coordinates that
+# parsec-guard reads) stays legible.
+Xwayland "$display" -geometry "${PARSEC_NESTED_GEOMETRY:-1600x1000}" -noreset -hidpi >>"$log" 2>&1 &
 xw=$!
 for _ in $(seq 50); do
   [[ -S /tmp/.X11-unix/X$num ]] && break
@@ -57,5 +60,22 @@ parsec=$!
 # the nested screen instead, now and whenever the Hyprland window is resized.
 python3 "$here/parsec-xfit" --watch "$display" parsecd >>"$log" 2>&1 &
 fit=$!
+
+# Focus the Xwayland window now that the server is up. Xwayland maps its window
+# before it has bound the Wayland keyboard; focused at that moment (as Hyprland
+# does with a new window), the keys never reach the server until focus leaves
+# and comes back. The panel launches with no_initial_focus, so this is the
+# first focus the window gets.
+(
+  for _ in $(seq 50); do
+    addr=$(hyprctl -j clients 2>/dev/null | jq -r --argjson p "$xw" 'first(.[] | select(.pid == $p) | .address) // empty' || true)
+    if [[ $addr =~ ^0x[0-9a-f]+$ ]]; then
+      sleep 0.3
+      hyprctl eval "hl.dispatch(hl.dsp.focus({ window = \"address:$addr\" }))" >/dev/null
+      exit 0
+    fi
+    sleep 0.1
+  done
+) &
 
 wait "$parsec" || true

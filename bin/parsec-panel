@@ -278,7 +278,12 @@ launch() {
   else
     cmd="bwrap --dev-bind / / --bind $base $MAIN $PARSEC $url"
   fi
-  [[ -n $ws ]] && rule="[workspace $ws] "
+  local rules=""
+  [[ -n $ws ]] && rules="workspace $ws"
+  # A nested instance focuses its own window once its X server is up (see
+  # parsec-nested); focused right at map time, the keyboard can miss it.
+  [[ -n $disp ]] && rules="${rules:+$rules; }no_initial_focus"
+  [[ -n $rules ]] && rule="[$rules] "
   hyprctl eval "hl.exec_cmd(\"$rule$cmd\")" >/dev/null
 }
 
