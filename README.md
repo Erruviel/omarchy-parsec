@@ -78,7 +78,7 @@ injects into that server through XTEST (`omarchy-macro play <macro>
 --display :N`), so every instance runs its macro at the same time, whatever
 has focus, and your real mouse stays free.
 
-`bin/parsec-xfit` watches each such server and does the four things a window
+`bin/parsec-xfit` watches each such server and does the five things a window
 manager would otherwise do there:
 
 - keeps Parsec's window the size of the nested screen when you resize or
@@ -86,6 +86,10 @@ manager would otherwise do there:
 - announces the window as the active one the EWMH way
   (`_NET_SUPPORTING_WM_CHECK`, `_NET_ACTIVE_WINDOW`, input focus): without that
   Parsec never fills its Computers list and ignores clicks;
+- sets the regular arrow as the root window's cursor. The server shows a blank
+  cursor while it starts, and Parsec's window inherits the root cursor, so
+  nothing ever replaces it: the pointer is invisible over the Computers list
+  until a stream sets a cursor of its own;
 - hides the cursor with XFixes (plus one in-place pointer warp) whenever Parsec
   shows its empty cursor, i.e. inside a game. Without that, Xwayland hands the
   game accelerated mouse deltas rounded to whole pixels, slow movements get

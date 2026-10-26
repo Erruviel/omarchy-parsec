@@ -13,6 +13,12 @@ A rootful Xwayland has no window manager. Two things go wrong without one:
   part of a window manager: `_NET_SUPPORTING_WM_CHECK` on the root, the
   Parsec window as `_NET_ACTIVE_WINDOW` and `_NET_CLIENT_LIST`, and the
   input focus kept on it.
+- The root cursor. The server's own root cursor is shown while it starts
+  up, before any client is connected, and Xfixes shows a blank one then;
+  nothing redisplays it later, because Parsec's window inherits the very
+  same cursor. So the pointer is invisible over Parsec's Computers list
+  until something sets a different cursor (the stream does). Defining the
+  regular arrow on the root, as a window manager would, fixes that.
 - Mouse deltas. A rootful Xwayland hands XI2 raw motion to clients from the
   accelerated, rounded pointer movement unless the cursor is hidden the
   XFixes way; slow movements then round to zero and a game feels sluggish,
@@ -113,6 +119,10 @@ X.XCreateSimpleWindow.argtypes = [
     ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_ulong, ctypes.c_ulong,
 ]
 X.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+X.XCreateFontCursor.restype = ctypes.c_ulong
+X.XCreateFontCursor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+X.XDefineCursor.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong]
+XC_LEFT_PTR = 68
 X.XGetInputFocus.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int)]
 XA_ATOM, XA_CARDINAL, XA_WINDOW = 4, 6, 33
 REVERT_TO_PARENT = 2
@@ -164,6 +174,37 @@ def warp_in_place(dpy) -> None:
     mask = ctypes.c_uint()
     if X.XQueryPointer(dpy, root, ctypes.byref(r), ctypes.byref(child), ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx), ctypes.byref(wy), ctypes.byref(mask)):
         X.XWarpPointer(dpy, 0, root, 0, 0, 0, 0, rx.value, ry.value)
+
+
+XT = ctypes.CDLL(ctypes.util.find_library("Xtst"))
+XT.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+
+
+def anchor_pointer(dpy, center: bool = False) -> None:
+    """An XTEST motion before a macro starts: to the pointer's own position,
+    or with center to the middle of the screen.
+
+    Once the real mouse has left the Xwayland window, the next time the
+    server re-traces the pointer (a resize, a warp) it puts it over the root
+    window, and a button pressed through XTEST then goes there instead of to
+    Parsec. Moving through XTEST makes XTEST the pointer's last device, so the
+    trace finds Parsec's window again."""
+    root = X.XDefaultRootWindow(dpy)
+    if center:
+        width, height = screen_size(dpy, root)
+        XT.XTestFakeMotionEvent(dpy, -1, width // 2, height // 2, 0)
+        X.XSync(dpy, 0)
+        return
+    r = ctypes.c_ulong()
+    child = ctypes.c_ulong()
+    rx = ctypes.c_int()
+    ry = ctypes.c_int()
+    wx = ctypes.c_int()
+    wy = ctypes.c_int()
+    mask = ctypes.c_uint()
+    if X.XQueryPointer(dpy, root, ctypes.byref(r), ctypes.byref(child), ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx), ctypes.byref(wy), ctypes.byref(mask)):
+        XT.XTestFakeMotionEvent(dpy, -1, rx.value, ry.value, 0)
+        X.XSync(dpy, 0)
 
 
 def cursor_is_empty(dpy) -> bool | None:
@@ -249,6 +290,8 @@ class FakeWM:
         self._prop(self.root, "_NET_SUPPORTED", XA_ATOM, [self._atom(a) for a in supported])
         self._prop(self.root, "_NET_NUMBER_OF_DESKTOPS", XA_CARDINAL, [1])
         self._prop(self.root, "_NET_CURRENT_DESKTOP", XA_CARDINAL, [0])
+        # libX11 loads the Xcursor theme (XCURSOR_THEME/SIZE) for this.
+        X.XDefineCursor(dpy, self.root, X.XCreateFontCursor(dpy, XC_LEFT_PTR))
 
     def _atom(self, name: str) -> int:
         return X.XInternAtom(self.dpy, name.encode(), 0)
@@ -306,8 +349,15 @@ def fit_once(dpy, wanted: bytes, wm: FakeWM | None = None, shadow: CursorShadow 
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     watch = "--watch" in sys.argv
+    if "--anchor" in sys.argv and len(args) == 1:
+        dpy = X.XOpenDisplay(args[0].encode())
+        if not dpy:
+            print(f"cannot open {args[0]}", file=sys.stderr)
+            return 1
+        anchor_pointer(dpy, center="--center" in sys.argv)
+        return 0
     if len(args) != 2:
-        print("usage: parsec-xfit [--watch] DISPLAY WM_CLASS", file=sys.stderr)
+        print("usage: parsec-xfit [--watch] DISPLAY WM_CLASS | parsec-xfit --anchor [--center] DISPLAY", file=sys.stderr)
         return 2
     display, wm_class = args
     dpy = X.XOpenDisplay(display.encode())

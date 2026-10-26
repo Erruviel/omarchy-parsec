@@ -429,7 +429,10 @@ resolve_name() {
 # player, and only the focused one drives anything (omarchy-macro handles
 # pausing the others and letting their buttons go).
 macro_start() {
-  local n e macro addr disp
+  local n e macro addr disp center=--center
+  # Pause ("active") starts it where the mouse aims; from the panel the mouse
+  # is on the bar, so the instance's pointer goes to the middle of its screen.
+  [[ $1 == active ]] && center=
   n=$(resolve_name "$1") || exit 1
   valid_name "$n" || exit 1
   e=$(entry "$n") || e='{}'
@@ -437,6 +440,9 @@ macro_start() {
   [[ $macro =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "no macro configured for $n" >&2; exit 1; }
   disp=$(live_display_of "$n")
   if [[ -n $disp ]]; then
+    # The macro clicks where the instance's pointer is; make sure that is over
+    # Parsec and not the root window (see parsec-xfit, anchor_pointer).
+    python3 "$(dirname "${BASH_SOURCE[0]}")/parsec-xfit" --anchor $center "$disp" 2>/dev/null || true
     setsid -f omarchy-macro play "$macro" --display "$disp" >/dev/null 2>&1 </dev/null
     return
   fi
