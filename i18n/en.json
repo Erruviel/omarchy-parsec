@@ -20,6 +20,11 @@
   "row.macroRunning": "%1 running",
   "row.macroWaiting": "%1 waiting for focus",
   "row.macroMissing": "macro %1 not found",
+  "action.guard": "Gamekeeper",
+  "action.guardTip": "Spot mode (drop): while the macro runs, turn the camera to Mimics out of weapon range, run to the Gamekeeper (at most the set range) and back; the macro does the hitting",
+  "row.range": "Run range",
+  "row.rangeValue": "%1 m",
+  "action.guardSeen": "Gamekeeper %1",
   "row.display": "own X server %1",
   "action.add": "Add",
   "action.editInstance": "Edit this instance",
@@ -44,5 +49,13 @@
   "editor.remove": "Remove",
   "editor.removeBlocked": "Stop the instance first",
   "editor.cancel": "Cancel",
-  "editor.save": "Save"
+  "editor.save": "Save",
+  "action.level": "Mobs",
+  "action.levelTip": "Level mode: while the macro runs, go from one taught mob to the next within the set range from the spot and let the macro hit them; Mimics and the Gamekeeper are ignored",
+  "action.teach": "Teach",
+  "action.teachTip": "Stand by a mob within weapon reach, aim at it and click: the bot remembers its name (colour and shape) and that distance",
+  "mobs.title": "Taught mobs",
+  "mobs.detail": "name %1 px · reach %2 · %3",
+  "mobs.empty": "No taught mobs yet. Stand by a mob within weapon reach, aim at it and click Teach on the instance.",
+  "mobs.remove": "Forget"
 }

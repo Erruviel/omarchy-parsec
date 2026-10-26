@@ -9,6 +9,9 @@
 #   parsec-panel macro-start <name> / macro-stop <name> / macro-toggle <name>
 #                                -> run the instance's macro; <name> may be
 #                                   "active" for the instance that has focus
+#   parsec-panel guard-start <name> / guard-stop <name> / guard-toggle <name>
+#                                -> parsec-guard (Gamekeeper hunt) on an
+#                                   instance with its own X server
 #   parsec-panel edit            -> open the instance list in the editor
 #   parsec-panel add key=value...        -> append an instance (name=, label=,
 #                                           workspace=, peer_id=, macro=, nested=1|0)
@@ -31,9 +34,11 @@
 set -o pipefail
 
 CONFIG=$HOME/.config/parsec-multi/instances.json
+MOBS=$HOME/.config/parsec-multi/mobs.json  # mobs taught to parsec-guard, shared by all instances
 MAIN=$HOME/.parsec
 INSTANCES=$HOME/.parsec-instances
 PARSEC=/usr/bin/parsecd
+LOGDIR=${XDG_CACHE_HOME:-$HOME/.cache}/parsec-multi
 
 valid_name() { [[ $1 =~ ^[A-Za-z0-9_-]{1,32}$ ]]; }
 valid_peer() { [[ -z $1 || $1 =~ ^[A-Za-z0-9_-]{1,64}$ ]]; }
@@ -112,6 +117,13 @@ status() {
     macro_names=$(jq -c '[.macros[]?.name] // []' <<<"$mstatus" 2>/dev/null || echo '[]')
   fi
 
+  # Displays with a parsec-guard watching them.
+  local guards
+  # Displays with a parsec-guard watching them, with its mode (spot / level).
+  guards=$(pgrep -af 'parsec-guard.* :[0-9]+$' | awk '{ print $NF, ($0 ~ /--mode level/) ? "level" : "spot" }' | sort -u | jq -Rsc 'split("\n") | map(select(. != "") | split(" ")) | map({key: .[0], value: .[1]}) | from_entries')
+  local mobs='[]'
+  [[ -r $MOBS ]] && mobs=$(jq -c 'if type == "array" then map(select(type == "object") | del(.template)) else [] end' "$MOBS" 2>/dev/null || echo '[]')
+
   local out='[]'
   local n
   for n in $(jq -r '.[].name' <<<"$cfg"); do
@@ -127,7 +139,10 @@ status() {
     macro=$(jq -r '.macro // ""' <<<"$e")
     [[ $macro =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || macro=""
     [[ -n $macro && -r $macro_dir/$macro.json ]] && macro_known=1
+    local seen=""
+    [[ -n $disp ]] && seen=$(grep -o '"event": "seen", "time": "[0-9:]*"' "$LOGDIR/guard-$n.log" 2>/dev/null | tail -n 1 | grep -o '[0-9:]*"$' | tr -d '"')
     out=$(jq -c --argjson e "$e" --arg pid "$pid" --argjson conn "$conn" --arg host "$host" \
+      --argjson guards "$guards" --arg seen "$seen" \
       --argjson wins "$wins" --arg loggedin "$([[ -s $base/user.bin ]] && echo 1 || echo 0)" \
       --argjson players "$players" --arg macro "$macro" --arg macro_known "$macro_known" --arg disp "$disp" '
       . + [ ($wins | map(select(.display == "" and (.pid | tostring) == $pid))[0] // {}) as $plain |
@@ -147,6 +162,10 @@ status() {
           main: ($e.name == "main"),
           display: $disp,
           nested: ($disp != "" and ($w.display // "") == $disp),
+          guard: ($disp != "" and ($guards[$disp] // "") != ""),
+          guardMode: (if $disp != "" then ($guards[$disp] // "") else "" end),
+          guardSeen: (if $disp != "" and ($guards[$disp] // "") == "spot" then $seen else "" end),
+          range: ($e.range // 15),
           loggedIn: ($loggedin == "1"),
           running: ($pid != ""),
           pid: ($pid | if . == "" then null else tonumber end),
@@ -157,8 +176,8 @@ status() {
   done
 
   jq -nc --argjson i "$out" --arg installed "$([[ -x $PARSEC ]] && echo 1 || echo 0)" \
-    --arg bwrap "$(command -v bwrap >/dev/null && echo 1 || echo 0)" --argjson macros "$macro_names" \
-    '{installed: ($installed == "1"), bwrap: ($bwrap == "1"), instances: $i, macros: $macros}'
+    --arg bwrap "$(command -v bwrap >/dev/null && echo 1 || echo 0)" --argjson macros "$macro_names" --argjson mobs "$mobs" \
+    '{installed: ($installed == "1"), bwrap: ($bwrap == "1"), instances: $i, macros: $macros, mobs: $mobs}'
 }
 
 # ------------------------------------------------------------- list editing ---
@@ -198,6 +217,7 @@ patch_from_args() {
       peer_id)   valid_peer "$val" || fail "bad peer id" ;;
       macro)     [[ -z $val || $val =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "bad macro name" ;;
       nested)    [[ $val == 0 || $val == 1 ]] || fail "nested must be 0 or 1" ;;
+      range)     [[ $val =~ ^[0-9]{1,2}$ ]] || fail "range must be 0-99 (metres)" ;;
       *) fail "unknown field '$key'" ;;
     esac
     patch=$(jq -c --arg k "$key" --arg v "$val" '. + {($k): $v}' <<<"$patch")
@@ -210,6 +230,7 @@ apply_patch() { # entry patch display-for-nested -> entry
   jq -c --argjson p "$2" --arg disp "$3" '
     . + ($p | with_entries(select(.key != "nested")))
     | (if ($p.workspace // null) != null then .workspace = (if $p.workspace == "" then null else ($p.workspace | tonumber) end) else . end)
+    | (if ($p.range // null) != null then .range = ($p.range | tonumber) else . end)
     | (if ($p.nested // null) != null then (if $p.nested == "1" then .display = $disp else del(.display) end) else . end)
     | with_entries(select(.value != null))' <<<"$1"
 }
@@ -407,6 +428,7 @@ stop() {
   if [[ -n $disp ]]; then
     # The wrapper takes Parsec and its Xwayland down with it.
     pkill -f "parsec-nested $n $disp " 2>/dev/null
+    pkill -f "parsec-guard.* $disp\$" 2>/dev/null
     return
   fi
   for p in $(pgrep -x parsecd); do
@@ -472,9 +494,97 @@ macro_toggle() {
   state=$(status | jq -r --arg n "$n" '.instances[] | select(.name == $n) | .macroState')
   case $state in
     running|waiting) macro_stop "$n" ;;
-    off) macro_start "$n" ;;
+    off) macro_start "$1" ;;
     *) echo "$n: macro state '$state'" >&2; exit 1 ;;
   esac
+}
+
+# ---------------------------------------------------------------- mob guard ---
+# parsec-guard watches an instance's own X server for the Gamekeeper and,
+# while the instance's macro runs, hunts it down (see bin/parsec-guard). One per display; its log
+# starts empty with every run, so the panel shows this run's sightings only.
+# Sets GUARD to the command that runs parsec-guard (it needs numpy).
+guard_runner() {
+  local here uv
+  here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  if python3 -c 'import numpy' 2>/dev/null; then
+    GUARD=(python3 "$here/parsec-guard")
+  elif uv=$(command -v uv || command -v "$HOME/.local/share/mise/shims/uv"); then
+    GUARD=("$uv" run --script --quiet "$here/parsec-guard")
+  else
+    fail "parsec-guard needs numpy: sudo pacman -S python-numpy"
+  fi
+}
+
+valid_mode() { [[ $1 == spot || $1 == level ]]; }
+
+# guard-start <name> [spot|level]: spot (default) keeps the character on the
+# Mimics and the Gamekeeper where it stands; level hunts the taught mobs
+# within the instance's range. One guard per display: the other mode stops.
+guard_start() {
+  local n=$1 mode=${2:-spot} disp
+  valid_name "$n" || exit 1
+  valid_mode "$mode" || fail "mode must be spot or level"
+  disp=$(live_display_of "$n")
+  [[ -n $disp ]] || fail "$n is not running in its own X server; the guard needs one"
+  if pgrep -f "parsec-guard.* $disp\$" >/dev/null; then
+    [[ $(guard_mode "$disp") == "$mode" ]] && return
+    pkill -f "parsec-guard.* $disp\$"
+    sleep 0.3
+  fi
+  guard_runner
+  mkdir -p "$LOGDIR"
+  setsid -f "${GUARD[@]}" --hunt "$n" --mode "$mode" "$disp" >"$LOGDIR/guard-$n.log" 2>&1 </dev/null
+}
+
+guard_mode() { # display -> spot | level | ""
+  local line
+  line=$(pgrep -af "parsec-guard.* $1\$" | head -n 1)
+  [[ -z $line ]] && return
+  [[ $line == *"--mode level"* ]] && echo level || echo spot
+}
+
+guard_stop() {
+  local n=$1 disp
+  valid_name "$n" || exit 1
+  disp=$(live_display_of "$n")
+  [[ -n $disp ]] || disp=$(display_of "$n")
+  [[ -n $disp ]] && pkill -f "parsec-guard.* $disp\$"
+  return 0
+}
+
+guard_toggle() {
+  local n=$1 mode=${2:-spot} disp
+  valid_name "$n" || exit 1
+  valid_mode "$mode" || fail "mode must be spot or level"
+  disp=$(live_display_of "$n")
+  if [[ -n $disp && $(guard_mode "$disp") == "$mode" ]]; then
+    guard_stop "$n"
+  else
+    guard_start "$n" "$mode"
+  fi
+}
+
+# ------------------------------------------------------------- taught mobs ---
+# mob-teach <name>: parsec-guard learns the mob the instance's character is
+# looking at (stand in reach of it) into $MOBS; mob-remove <id> forgets one.
+mob_teach() {
+  local n=$1 disp
+  valid_name "$n" || exit 1
+  disp=$(live_display_of "$n")
+  [[ -n $disp ]] || fail "$n is not running in its own X server"
+  guard_runner
+  "${GUARD[@]}" --teach "$n" "$disp"
+}
+
+mob_remove() {
+  local id=$1 tmp
+  [[ $id =~ ^mob-[0-9]+$ ]] || fail "bad mob id"
+  [[ -r $MOBS ]] || fail "no taught mobs"
+  tmp=$(mktemp "$(dirname "$MOBS")/.mobs.XXXXXX") || fail "cannot write $MOBS"
+  jq --indent 1 --arg id "$id" 'map(select(.id != $id))' "$MOBS" > "$tmp" && mv "$tmp" "$MOBS"
+  rm -f "$(dirname "$MOBS")/mobs/$id.png"
+  echo "forgot $id"
 }
 
 edit() {
@@ -505,10 +615,15 @@ case ${1:-status} in
   macro-start)  macro_start "$2" ;;
   macro-stop)   macro_stop "$2" ;;
   macro-toggle) macro_toggle "$2" ;;
+  guard-start)  guard_start "$2" "${3:-spot}" ;;
+  guard-stop)   guard_stop "$2" ;;
+  guard-toggle) guard_toggle "$2" "${3:-spot}" ;;
+  mob-teach)    mob_teach "$2" ;;
+  mob-remove)   mob_remove "$2" ;;
   edit)   edit ;;
   display) set_display "$2" "$3" ;;
   add)    shift; add_instance "$@" ;;
   set)    n=$2; shift 2; set_instance "$n" "$@" ;;
   remove) remove_instance "$2" ;;
-  *) echo "usage: parsec-panel [status|launch <name>|focus <name>|focus-next|stop <name>|macro-start <name>|macro-stop <name>|macro-toggle <name>|display <name> <:N|none>|add k=v..|set <name> k=v..|remove <name>|edit]" >&2; exit 2 ;;
+  *) echo "usage: parsec-panel [status|launch <name>|focus <name>|focus-next|stop <name>|macro-start <name>|macro-stop <name>|macro-toggle <name>|guard-start|guard-toggle <name> [spot|level]|guard-stop <name>|mob-teach <name>|mob-remove <id>|display <name> <:N|none>|add k=v..|set <name> k=v..|remove <name>|edit]" >&2; exit 2 ;;
 esac

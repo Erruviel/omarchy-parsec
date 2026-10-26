@@ -1,0 +1,2094 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["numpy"]
+# ///
+"""Watch a Parsec instance's screen for the Gamekeeper, and with --hunt follow targets.
+
+It reports Gamekeeper sightings and saves marked-up snapshots. The instance
+runs in its own X server (see parsec-nested), so the screen is read straight
+from that server whether the window is visible or not.
+
+With --hunt NAME, while that instance's macro runs, it points the character
+at targets for the macro to hit, turning the camera with XTEST mouse motion.
+Mimics (yellow names) come to the character: it turns toward the nearest only
+when none is in front, and never walks after them. To the Gamekeeper it runs
+(W, stopping close), then walks the same way back with S, undoing the turns,
+stopping each stretch by the coordinates under the minimap (minimap in the
+top right corner). Parsec passes mouse turns to the game only after it has
+seen a click since its window last had focus, so a turn that never shows
+gets a click first (one that leaves the left button as the macro had it).
+With --home as well, the older leash: walk back to where the macro started
+once more than LEASH units away (unreliable, off by default).
+
+Detection is plain colour thresholding. A mob's blue name is cyan (hue about
+182-201, fairly saturated); in the game world nothing else is, so the pixels
+of that colour are grouped into clusters and a cluster shaped like a line of
+text is a hit. Other mobs have blue names too (Vicrodile, Gavial); the name
+plate does not scale with distance, so the Gamekeeper is told apart by the
+width of its name: 57-60 px at 1080p, the others 29-41. The chat box (item links are the same cyan) and the minimap
+are left out. The guard's own blue ring around the character is a deeper blue
+and the MP bar deeper still, so the hue range keeps them out.
+
+  parsec-guard [--interval S] [--snapshots DIR] [--hunt NAME [--mode spot|level]] DISPLAY
+  parsec-guard --image FILE.ppm                           test on a screenshot
+  parsec-guard --calibrate NAME DISPLAY                   measure a full camera turn, then --home-test (macro off, open ground)
+  parsec-guard --home-test NAME DISPLAY                   walk off 2 s and back by the coordinates (macro off)
+  parsec-guard --teach NAME DISPLAY                       learn the mob under the crosshair (stand in reach of it)
+
+Needs numpy (`pacman -S python-numpy`, or run it with `uv run --script`).
+"""
+import base64
+import ctypes
+import ctypes.util
+import json
+import math
+import os
+import signal
+import subprocess
+import sys
+import time
+import zlib
+
+try:
+    import numpy as np
+except ImportError:
+    sys.exit("parsec-guard needs numpy: sudo pacman -S python-numpy (or: uv run --script parsec-guard ...)")
+
+# Hue 182-201 as integer tests on b >= g >= r: hue = 240 - 60 * (g - r) / (b - r).
+HUE_LO, HUE_HI = 0.65, 0.967  # (g - r) / (b - r) for hue 201 and 182
+SAT_MIN = 0.40
+VAL_MIN = 97  # 38 % of 255
+
+# The game draws 16:9; Parsec letterboxes it into whatever the window is.
+GAME_ASPECT = 16 / 9
+# UI areas as fractions of the game picture: (x0, y0, x1, y1).
+EXCLUDE = (
+    (0.0, 0.745, 0.31, 1.0),  # chat box: item links are the same cyan
+    (0.92, 0.0, 1.0, 0.14),  # minimap
+    (0.86, 0.17, 1.0, 0.27),  # quest tracker
+)
+CELL = 6  # px per clustering cell at 1080p
+BACKGROUND_MAX = 110  # mean brightness around a name in the game world
+NAME_WIDTH = (52, 66)  # "Gamekeeper", px at 1080p (measured 57-60)
+MIMIC_WIDTH = (20, 28)  # "Mimic", px at 1080p (measured 23-25)
+
+# Following, measured on vm1 and main (1512x910 windows).
+KEY_W = 25  # X keycode of W: evdev 17, + 8
+TURN_PX = 1.2  # image shift at 1080p per XTEST mouse unit to start from (vm1 1.2-1.4, main 0.4)
+TURN_TIMEOUT = 1.5  # s for a turn to show in the stream (measured 0.25-0.9), else it was lost
+AIM_OK = 40  # px at 1080p: a name this close to the crosshair is straight ahead
+WALK_AIM = 120  # px at 1080p: walk only while the target is roughly ahead
+NEAR = 120  # px at 1080p between the target's name and the character's: close enough to hit
+WALK_MAX = 6.0  # s of walking at one go, then stop and look again
+CHAR_DY = -30  # px at 1080p: the character's own name plate, relative to the crosshair
+KEY_S = 39  # X keycode of S (evdev 31): walks backwards, facing the same way
+HIT_DX, HIT_DIST = 90, 180  # px at 1080p: a Mimic this far at most is in front, being hit
+CLOSE_EXTRA = 140  # px at 1080p beyond a target's reach distance: close, its name sways
+# Mobs the user taught (parsec-guard --teach): colour, width and text shape of
+# the name plate, and how far its name sits from the character's when it is
+# in reach. Shared by all instances.
+MOBS_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "parsec-multi", "mobs.json")
+MOB_HUE_TOL = 8  # degrees of hue either side of the taught name's (14 lets yellow-green grass in)
+MOB_WIDTH_TOL = 0.14  # of the taught width
+MOB_SHAPE_MIN = 0.55  # correlation of the text shape with the taught one
+VIVID = 0.75  # saturation of a deep-coloured name (dark red): may be darker than its ground
+TEACH_LIT = 120  # lit pixels of a name reach at least this when taught (dark red ones about 140)
+# The "Revive" button of the death window, grey levels at half size
+# (taken at the larger HUD scale, 15x56); found at other scales by resizing.
+REVIVE_TPL = np.frombuffer(base64.b64decode("JCstLCwsLC0uLiwtLi8uLi4tLS0sLC4uLi4tLi0tLS0tLC0uLi4vLy4tLS0tLS0tLS0tLS0tLSgsUE9QUFBPT1BQUFBQUFBQUE9QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE9QUE9QNy1LS0xMTExMTExLTExLTExMTExMTEtLTExMTExMTExMTExMTExMTExMTExMS0tMTExMTExMTEw3K0pMS0pKS0pKSkpKSktLSkpKSkpKSkpKSkpKSkpKSUpKSkpKS0pKSkpLSkpJSkpKSkpKSkpLSzYrSUlJSUlJSUlJSUlJSUlJSUlISUlJSUlJSUlJSElJSUlJSUhJSUlJSElJSUlJSUlJSUlJSUlJNSpHR0dHR0dHR0dHR0dHR0dHR3WCglJGR0ZGR0dgSkdHR0ZGRkdHR0dHR0dHR0dHR0dHR0ZGR0gzKUVFRUVFRUVFRUVFRUVFRUVFqWVklkVFRUVFRVJHREVERUVFRERFRURFRUVFRUVFRUVFRUVFRTIpQ0NDQ0NDQ0NDQ0NDQ0NDQ0OfREOfWpyWiFWGlJRLj2agkENCQkNDQ0NDQ0NDQ0NDQ0NDQ0REMShAQEBAQEBAQEBAQEBAQEBAQLeewWCBmrNilJyUV5OenojAQUBAQEBAQEBAQEBAQEBAQEFAQUAwJz8+Pj4+Pj4+Pj4+Pj4+Pj4/nj9+XoBxckuWfpFKm3udVno+Pz4+Pj4+Pj4+Pj4+Pj8/Pj8+Py4mPj09PT09PT09PT09PT09PT12PUNuRJB/QGtIb0RzQUibdT09Pj09PT09PT09PT09PT09PT0+LiU7PDs7Ozs7Ozs7Ozs7Ozs7Ozs8Ozs7Ozs7Ozs8Ozs8PDw8Ozs8PDs8PDs7PDw7Ozs7PDs7OzwsJDk6OTk5OTk5OTk6Ojo6Ojo5OTk5OTk5OTk5OTk5OTk5Ojo6Ojo6Ojo5OTk5OTk5Ojo5Ojk5OislOTg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg3ODg5LCI/Pj49Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4+Pj4q"), np.uint8).reshape(15, 56).astype(np.float32)
+REVIVE_MIN = 0.7  # correlation that makes a patch the button (none elsewhere reached 0.6)
+REVIVE_HP = 0.9  # HP to heal to in the camp before walking back to the spot
+REVIVE_HOLD_MAX = 90.0  # s to wait for that at most
+REVIVE_OK = 4.0  # units from the spot that count as back after reviving
+REVIVE_WALK_MAX = 180.0  # s of walking from the camp back to the spot before giving up
+FAR_D = 300  # px at 1080p from the character: beyond this a name is far, and moves about twice as much per turn unit
+FAR_GAIN = 2.0  # px per unit for far names until measured (vm1 measured 2.2 on the Gamekeeper)
+MOB_REACH = 75  # px at 1080p between a taught mob's name and the character's: in reach of a blow (hits seen at 46-66)
+PITCH_DOWN, PITCH_BACK = 1000, 450  # mouse units: to the camera's stop looking down, then back (main: horizon just out of view)
+PITCH_EVERY = 90.0  # s: at most this often, when it starts looking round
+REF_Y = 30  # px at 1080p below the crosshair: the character's middle, to tell where a close mob stands (names over it: ahead, under it: behind)
+FRONT = math.radians(25)  # a close mob within this angle of the way the character faces is in front of it
+UNITS_RAD = 525  # mouse units per radian of camera turn when not calibrated (main measured 525-593)
+TEXT_CONTRAST = 40  # a name's pixels are this much brighter (max channel) than what is around them
+TEXT_POP = 30  # a pixel of a taught name is this much brighter than the mean of the 15 px around it
+KEEPER_RANGE = 15.0  # metres from where a chase starts the character may run; set per instance in the panel
+KEEPER_GONE = 2.5  # s without the Gamekeeper's name: dead (or gone), walk back
+CHASE_MAX = 300.0  # s after the Gamekeeper before walking back anyway
+MIMIC_REACT = 0.8  # s with no Mimic in front before turning to one, like a player noticing
+TURN_REST = 1.5  # s at least between two turns toward Mimics
+MIMIC_RESPAWN = 10.0  # s Mimics take to come back once all are dead: keep still meanwhile
+SCAN_STEPS = 4  # looks around (a quarter turn each: one full turn) after that wait, before waiting again
+FIGHT_SHOTS = 40  # pictures of fights kept per run, to learn the damage numbers from
+# Home: the position the macro was started at, read from the coordinates
+# under the minimap (minimap in the top right corner).
+COORD_BOX = (0.86, 0.08, 1.0, 0.26)  # game-picture fractions searched for the "x, y" line
+LEASH = 5.0  # game units (metres) from home: Mimics walk back beyond 4-5
+HOME_OK = 1.5  # units from home that count as back
+RETURN_MAX = 45.0  # s of walking home before giving up
+UPR_RANGE = (4000, 40000)  # mouse units per radian, sane bounds (vm1 measured about 16000)
+# Digit templates 0-9, 6x10 cells of the minimap coordinates' font, built from
+# hand-read frames of a -hidpi instance (1063 px high game picture).
+DIGITS = np.array([[-0.184, -0.184, -0.183, -0.183, -0.183, -0.183, -0.169, -0.093, 0.02, 0.033, -0.05, -0.157, -0.076, 0.089, 0.183, 0.193, 0.13, -0.032, 0.067, 0.168, -0.084, -0.119, 0.09, 0.13, 0.073, 0.171, -0.117, -0.161, 0.086, 0.146, 0.069, 0.17, -0.117, -0.16, 0.086, 0.146, 0.082, 0.169, -0.117, -0.159, 0.087, 0.147, 0.081, 0.169, -0.117, -0.16, 0.086, 0.146, -0.036, 0.12, 0.135, 0.135, 0.139, 0.015, -0.163, -0.107, -0.024, -0.013, -0.075, -0.153], [-0.125, -0.125, -0.125, -0.125, -0.126, -0.126, -0.11, -0.034, -0.003, -0.086, -0.111, -0.11, -0.024, 0.221, 0.225, -0.032, -0.105, -0.022, 0.146, 0.345, 0.276, -0.018, -0.103, 0.039, 0.097, 0.193, 0.232, -0.019, -0.103, -0.072, -0.1, 0.124, 0.225, -0.018, -0.102, -0.078, -0.1, 0.124, 0.225, -0.019, -0.103, -0.078, -0.101, 0.124, 0.225, -0.019, -0.103, 0.023, -0.101, 0.123, 0.224, -0.019, -0.103, 0.019, -0.104, -0.048, -0.023, -0.083, -0.103, -0.103], [-0.152, -0.149, -0.15, -0.149, -0.146, -0.148, -0.117, 0.02, 0.084, 0.063, -0.075, -0.134, 0.046, 0.194, 0.236, 0.223, 0.112, -0.069, 0.091, -0.018, -0.117, -0.059, 0.241, 0.025, -0.126, -0.127, -0.125, -0.063, 0.239, 0.025, -0.128, -0.131, -0.1, 0.071, 0.147, -0.042, -0.125, -0.103, 0.07, 0.147, -0.04, -0.127, -0.103, 0.077, 0.145, -0.041, -0.124, -0.13, 0.1, 0.348, 0.247, 0.161, 0.128, -0.057, -0.025, 0.019, 0.017, 0.016, -0.002, -0.09], [-0.17, -0.171, -0.171, -0.171, -0.171, -0.171, -0.141, -0.041, 0.063, 0.056, -0.048, -0.149, -0.019, 0.152, 0.236, 0.232, 0.145, -0.023, 0.02, 0.035, -0.103, -0.072, 0.15, 0.164, -0.139, -0.122, -0.013, 0.117, 0.153, 0.076, -0.144, -0.125, 0.037, 0.203, 0.16, 0.02, -0.141, -0.149, -0.148, -0.102, 0.142, 0.172, -0.009, -0.005, -0.134, -0.102, 0.142, 0.172, 0.019, 0.167, 0.176, 0.176, 0.157, 0.026, -0.139, -0.069, 0.006, 0.002, -0.071, -0.146], [-0.135, -0.135, -0.134, -0.134, -0.135, -0.135, -0.122, -0.121, -0.106, -0.037, -0.086, -0.123, -0.114, -0.097, 0.013, 0.179, -0.011, -0.118, -0.095, 0.003, 0.137, 0.262, 0.002, -0.115, -0.073, 0.169, 0.073, 0.201, 0.003, -0.111, 0.042, 0.117, -0.001, 0.195, 0.004, -0.113, 0.21, 0.175, 0.126, 0.272, 0.145, -0.063, 0.07, 0.138, 0.157, 0.284, 0.168, -0.052, -0.112, -0.114, -0.073, 0.196, 0.005, -0.111, -0.115, -0.115, -0.104, -0.038, -0.086, -0.114], [-0.157, -0.157, -0.157, -0.159, -0.16, -0.159, -0.134, 0.004, 0.058, 0.057, 0.038, -0.094, -0.103, 0.246, 0.243, 0.19, 0.16, -0.045, 0.03, 0.133, -0.062, -0.142, -0.142, -0.119, 0.235, 0.171, 0.088, 0.069, -0.086, -0.128, 0.085, 0.165, 0.166, 0.16, 0.091, -0.075, -0.135, -0.139, -0.14, -0.097, 0.223, 0.006, 0.033, -0.073, -0.14, -0.096, 0.223, 0.005, 0.06, 0.127, 0.125, 0.125, 0.106, -0.066, -0.135, -0.043, -0.008, -0.019, -0.111, -0.143], [-0.187, -0.187, -0.187, -0.187, -0.188, -0.188, -0.151, -0.043, 0.013, -0.01, -0.12, -0.172, -0.014, 0.129, 0.171, 0.152, 0.042, -0.097, 0.15, 0.038, -0.104, -0.072, 0.044, -0.036, 0.201, 0.174, 0.063, 0.036, -0.087, -0.128, 0.212, 0.244, 0.166, 0.154, 0.076, -0.077, 0.177, 0.018, -0.163, -0.091, 0.181, 0.015, 0.176, 0.02, -0.161, -0.09, 0.182, 0.022, 0.041, 0.129, 0.122, 0.123, 0.09, -0.058, -0.148, -0.064, -0.02, -0.04, -0.128, -0.164], [-0.113, -0.114, -0.115, -0.115, -0.115, -0.115, 0.055, 0.092, 0.092, 0.09, 0.066, -0.073, 0.162, 0.223, 0.243, 0.362, 0.212, -0.045, -0.093, -0.093, -0.041, 0.271, -0.013, -0.094, -0.093, -0.071, 0.093, 0.155, -0.048, -0.092, -0.09, -0.04, 0.276, -0.005, -0.097, -0.091, -0.066, 0.101, 0.148, -0.049, -0.099, -0.088, -0.04, 0.274, -0.005, -0.096, -0.098, -0.091, -0.044, 0.275, -0.004, -0.095, -0.097, -0.095, -0.086, -0.005, -0.076, -0.098, -0.098, -0.097], [-0.177, -0.177, -0.176, -0.176, -0.177, -0.179, -0.152, -0.011, 0.044, 0.027, -0.115, -0.166, 0.01, 0.149, 0.179, 0.169, 0.069, -0.108, 0.212, -0.015, -0.162, -0.117, 0.212, -0.028, 0.072, 0.096, 0.073, 0.081, 0.118, -0.081, 0.024, 0.138, 0.158, 0.153, 0.089, -0.101, 0.209, -0.011, -0.153, -0.107, 0.215, -0.031, 0.208, -0.015, -0.158, -0.113, 0.211, -0.029, 0.043, 0.115, 0.114, 0.113, 0.093, -0.093, -0.154, -0.06, -0.023, -0.035, -0.13, -0.162], [-0.186, -0.184, -0.183, -0.183, -0.183, -0.183, -0.111, 0.007, 0.058, -0.009, -0.129, -0.172, 0.054, 0.177, 0.208, 0.168, 0.025, -0.125, 0.14, -0.033, -0.165, 0.013, 0.143, -0.058, 0.14, -0.033, -0.166, 0.012, 0.144, -0.058, 0.079, 0.118, 0.1, 0.202, 0.197, -0.056, -0.075, 0.094, 0.166, 0.247, 0.207, -0.058, -0.022, -0.105, -0.167, 0.011, 0.144, -0.058, 0.069, 0.133, 0.132, 0.136, 0.051, -0.109, -0.128, -0.05, -0.016, -0.061, -0.14, -0.169]], np.float32)
+# The same digits at a larger HUD scale (7 px apart at 1080p), pixel for
+# pixel (8x12), each in the few ways it is drawn (where it falls, its neighbour).
+DIGITS_L = np.array([[-0.082, -0.081, -0.081, -0.081, -0.081, -0.081, -0.082, -0.082, -0.08, -0.013, 0.225, 0.228, 0.228, 0.142, -0.079, -0.081, -0.009, 0.164, -0.068, -0.072, -0.072, 0.014, 0.141, -0.075, -0.011, 0.166, -0.073, -0.077, -0.076, 0.012, 0.145, -0.074, -0.011, 0.167, -0.074, -0.077, -0.077, 0.012, 0.145, -0.074, -0.011, 0.167, -0.073, -0.076, -0.076, 0.013, 0.146, -0.073, -0.008, 0.167, -0.072, -0.076, -0.076, 0.013, 0.146, -0.074, -0.007, 0.167, -0.073, -0.077, -0.077, 0.013, 0.146, -0.072, -0.008, 0.168, -0.072, -0.076, -0.077, 0.012, 0.145, -0.074, -0.015, 0.149, -0.041, -0.046, -0.048, 0.025, 0.124, -0.073, -0.076, -0.015, 0.202, 0.205, 0.205, 0.128, -0.074, -0.077, -0.076, -0.076, -0.074, -0.074, -0.076, -0.077, -0.076, -0.076], [-0.046, -0.046, -0.046, -0.046, -0.046, -0.046, -0.046, -0.045, -0.045, -0.045, -0.045, -0.031, 0.26, -0.044, -0.045, -0.016, -0.036, -0.04, -0.032, 0.284, 0.272, -0.039, -0.04, -0.039, -0.038, -0.036, 0.28, -0.021, 0.271, -0.04, -0.04, -0.039, -0.036, -0.04, -0.04, -0.026, 0.271, -0.039, -0.04, -0.037, -0.04, -0.04, -0.04, -0.027, 0.271, -0.039, -0.04, -0.037, -0.037, -0.038, -0.041, -0.027, 0.27, -0.039, -0.041, -0.038, -0.035, -0.04, -0.04, -0.028, 0.273, -0.038, -0.042, -0.04, -0.037, -0.041, -0.039, -0.025, 0.272, -0.039, -0.042, -0.036, -0.041, -0.041, -0.041, -0.025, 0.272, -0.04, -0.041, -0.038, -0.042, -0.04, -0.04, -0.027, 0.237, -0.04, -0.038, -0.04, -0.041, -0.039, -0.039, -0.039, -0.04, -0.042, -0.041, -0.039], [-0.071, -0.071, -0.071, -0.071, -0.071, -0.071, -0.071, -0.071, -0.07, -0.07, 0.088, 0.267, 0.267, 0.267, 0.088, -0.07, -0.066, 0.088, 0.117, -0.06, -0.06, -0.06, 0.117, 0.089, -0.066, -0.065, -0.064, -0.066, -0.066, -0.066, 0.116, 0.091, -0.066, -0.066, -0.066, -0.066, -0.066, -0.066, 0.117, 0.091, -0.065, -0.066, -0.066, -0.065, -0.066, -0.06, 0.117, 0.086, -0.065, -0.066, -0.065, -0.065, -0.057, 0.111, 0.088, -0.066, -0.065, -0.065, -0.065, -0.055, 0.108, 0.092, -0.066, -0.066, -0.065, -0.065, -0.053, 0.103, 0.094, -0.064, -0.065, -0.065, -0.064, -0.05, 0.113, 0.128, -0.033, -0.034, -0.034, -0.051, -0.065, 0.075, 0.241, 0.243, 0.242, 0.241, 0.241, 0.073, -0.066, -0.065, -0.065, -0.065, -0.065, -0.065, -0.065, -0.065], [-0.053, -0.06, -0.061, -0.06, -0.061, -0.061, -0.061, -0.061, -0.053, -0.058, 0.186, 0.209, 0.209, 0.208, -0.052, -0.06, -0.048, 0.184, -0.029, -0.051, -0.05, -0.049, 0.207, -0.053, -0.05, -0.056, -0.055, -0.055, -0.055, -0.053, 0.212, -0.054, -0.05, -0.056, -0.056, -0.052, -0.051, -0.05, 0.207, -0.053, -0.049, -0.057, -0.054, 0.193, 0.211, 0.209, -0.039, -0.055, -0.048, -0.056, -0.055, -0.056, -0.056, -0.055, 0.211, -0.054, -0.048, -0.055, -0.056, -0.057, -0.056, -0.055, 0.215, -0.052, -0.05, -0.036, -0.054, -0.06, -0.055, -0.054, 0.212, -0.053, -0.049, 0.166, -0.011, -0.031, -0.031, -0.028, 0.186, -0.057, -0.05, -0.055, 0.167, 0.189, 0.191, 0.188, -0.05, -0.057, -0.05, -0.059, -0.056, -0.054, -0.053, -0.055, -0.055, -0.056], [-0.073, -0.073, -0.072, -0.073, -0.072, -0.07, -0.071, -0.073, -0.048, -0.072, -0.071, -0.072, -0.041, 0.171, -0.058, -0.072, -0.068, -0.068, -0.066, -0.04, 0.209, 0.196, -0.052, -0.027, -0.068, -0.068, -0.068, -0.039, 0.213, 0.199, -0.053, -0.029, -0.068, -0.068, -0.041, 0.181, -0.014, 0.18, -0.052, -0.028, -0.066, -0.066, -0.034, 0.176, -0.018, 0.18, -0.051, -0.029, -0.043, -0.046, 0.183, -0.047, -0.037, 0.18, -0.051, -0.027, -0.04, -0.028, 0.188, -0.029, -0.019, 0.184, -0.036, -0.026, -0.023, 0.188, 0.208, 0.207, 0.211, 0.229, 0.175, -0.015, -0.042, -0.068, -0.067, -0.067, -0.035, 0.179, -0.053, -0.031, -0.066, -0.067, -0.068, -0.068, -0.038, 0.151, -0.054, -0.067, -0.067, -0.067, -0.067, -0.068, -0.068, -0.068, -0.068, -0.067], [-0.076, -0.076, -0.076, -0.077, -0.076, -0.077, -0.078, -0.078, -0.065, -0.056, 0.174, 0.212, 0.212, 0.211, 0.179, -0.047, -0.038, -0.047, 0.159, -0.031, -0.066, -0.066, -0.066, -0.055, -0.071, -0.049, 0.159, -0.036, -0.072, -0.072, -0.072, -0.055, -0.053, 0.16, -0.025, -0.067, -0.068, -0.07, -0.074, -0.055, -0.05, 0.181, 0.216, 0.214, 0.211, 0.186, -0.036, -0.064, -0.01, 0.151, -0.032, -0.07, -0.07, -0.04, 0.163, -0.033, -0.029, -0.069, -0.071, -0.07, -0.071, -0.041, 0.164, -0.032, -0.026, -0.05, -0.067, -0.07, -0.07, -0.042, 0.162, -0.032, -0.016, 0.142, -0.011, -0.043, -0.044, -0.019, 0.144, -0.032, -0.07, -0.052, 0.157, 0.19, 0.191, 0.164, -0.045, -0.069, -0.071, -0.07, -0.069, -0.069, -0.071, -0.071, -0.071, -0.072], [-0.08, -0.08, -0.081, -0.08, -0.081, -0.081, -0.081, -0.081, -0.019, -0.075, 0.149, 0.201, 0.201, 0.197, -0.043, -0.079, -0.07, 0.146, -0.019, -0.071, -0.071, -0.066, 0.165, -0.041, -0.071, 0.15, -0.022, -0.076, -0.075, -0.075, -0.075, -0.074, -0.072, 0.15, -0.022, -0.071, -0.071, -0.071, -0.075, -0.074, -0.07, 0.152, -0.01, 0.158, 0.203, 0.198, -0.031, -0.073, -0.011, 0.154, 0.196, -0.03, -0.075, -0.07, 0.17, -0.042, -0.009, 0.151, -0.022, -0.075, -0.076, -0.068, 0.17, -0.043, -0.01, 0.15, -0.022, -0.076, -0.075, -0.07, 0.172, -0.042, -0.016, 0.13, -0.004, -0.047, -0.048, -0.045, 0.15, -0.044, -0.073, -0.072, 0.134, 0.182, 0.181, 0.176, -0.042, -0.073, -0.075, -0.076, -0.076, -0.074, -0.074, -0.075, -0.076, -0.076], [-0.06, -0.06, -0.061, -0.061, -0.061, -0.061, -0.061, -0.061, -0.026, 0.262, 0.263, 0.263, 0.262, 0.263, 0.198, -0.059, -0.055, -0.05, -0.05, -0.05, 0.005, 0.214, -0.05, 0.011, -0.055, -0.055, -0.055, -0.055, 0.001, 0.212, -0.054, 0.011, -0.055, -0.055, -0.055, -0.004, 0.218, -0.054, -0.054, 0.013, -0.055, -0.055, -0.053, 0.002, 0.211, -0.053, -0.055, 0.013, -0.056, -0.054, -0.01, 0.225, -0.055, -0.056, -0.056, 0.012, -0.055, -0.051, 0.006, 0.208, -0.053, -0.053, -0.055, 0.012, -0.053, -0.014, 0.23, -0.054, -0.053, -0.056, -0.055, 0.012, -0.054, -0.015, 0.23, -0.054, -0.056, -0.056, -0.053, 0.007, -0.055, -0.02, 0.197, -0.056, -0.055, -0.056, -0.053, -0.054, -0.053, -0.055, -0.055, -0.055, -0.056, -0.057, -0.056, -0.054], [-0.086, -0.083, -0.083, -0.083, -0.082, -0.082, -0.085, -0.086, -0.082, -0.014, 0.209, 0.209, 0.209, 0.124, -0.081, -0.084, -0.013, 0.149, -0.072, -0.073, -0.073, 0.013, 0.126, -0.08, -0.014, 0.15, -0.08, -0.08, -0.08, 0.01, 0.13, -0.078, -0.017, 0.148, -0.075, -0.076, -0.075, 0.012, 0.126, -0.079, -0.076, 0.002, 0.21, 0.211, 0.21, 0.138, -0.059, -0.08, -0.012, 0.152, -0.067, -0.076, -0.073, 0.007, 0.129, -0.079, -0.013, 0.152, -0.077, -0.078, -0.081, 0.007, 0.128, -0.079, -0.013, 0.152, -0.074, -0.076, -0.079, 0.009, 0.124, -0.081, -0.018, 0.137, -0.049, -0.052, -0.048, 0.033, 0.105, -0.081, -0.078, -0.015, 0.193, 0.193, 0.185, 0.106, -0.079, -0.08, -0.079, -0.077, -0.076, -0.078, -0.078, -0.078, -0.079, -0.08], [-0.082, -0.082, -0.081, -0.081, -0.079, -0.08, -0.081, -0.081, -0.036, -0.055, 0.178, 0.216, 0.214, 0.185, -0.051, -0.078, -0.051, 0.156, -0.033, -0.07, -0.071, -0.039, 0.163, -0.054, -0.052, 0.161, -0.038, -0.079, -0.077, -0.044, 0.166, -0.054, -0.05, 0.161, -0.038, -0.079, -0.077, -0.042, 0.167, -0.054, -0.049, 0.154, -0.025, -0.062, -0.034, 0.189, 0.188, -0.052, -0.025, -0.043, 0.166, 0.209, 0.184, -0.015, 0.172, -0.05, -0.028, -0.072, -0.073, -0.074, -0.075, -0.043, 0.166, -0.051, -0.026, -0.052, -0.073, -0.077, -0.072, -0.026, 0.154, -0.051, -0.013, 0.141, -0.015, -0.046, -0.021, 0.148, -0.046, -0.079, -0.072, -0.054, 0.16, 0.196, 0.168, -0.046, -0.075, -0.075, -0.074, -0.075, -0.074, -0.075, -0.076, -0.076, -0.076, -0.076], [-0.089, -0.09, -0.09, -0.09, -0.089, -0.089, -0.089, -0.09, -0.086, -0.084, 0.122, 0.215, 0.214, 0.214, -0.003, -0.084, 0.022, 0.122, 0.014, -0.078, -0.078, -0.078, 0.138, -0.007, -0.082, 0.125, 0.012, -0.084, -0.084, -0.084, -0.085, -0.081, -0.081, 0.126, 0.013, -0.079, -0.078, -0.078, -0.083, -0.082, -0.077, 0.128, 0.021, 0.132, 0.215, 0.215, -0.003, -0.079, 0.026, 0.127, 0.216, 0.003, -0.083, -0.085, 0.149, -0.008, 0.025, 0.127, 0.013, -0.084, -0.085, -0.084, 0.151, -0.01, 0.023, 0.126, 0.013, -0.084, -0.084, -0.083, 0.149, -0.01, 0.012, 0.106, 0.022, -0.054, -0.054, -0.052, 0.136, -0.018, -0.084, -0.084, 0.107, 0.193, 0.192, 0.192, -0.014, -0.082, -0.083, -0.083, -0.082, -0.083, -0.082, -0.081, -0.082, -0.085], [-0.094, -0.094, -0.094, -0.094, -0.094, -0.094, -0.094, -0.094, -0.093, -0.093, 0.09, 0.223, 0.224, 0.223, 0.02, -0.093, 0.056, 0.091, 0.048, -0.083, -0.084, -0.084, 0.117, 0.019, 0.058, 0.094, 0.048, -0.088, -0.088, -0.089, -0.089, -0.089, 0.058, 0.094, 0.048, -0.085, -0.083, -0.084, -0.087, -0.088, 0.054, 0.094, 0.053, 0.102, 0.225, 0.225, 0.03, -0.084, -0.089, 0.094, 0.227, 0.038, -0.087, -0.09, 0.119, 0.022, -0.089, 0.094, 0.049, -0.087, -0.089, -0.088, 0.119, 0.022, -0.088, 0.094, 0.047, -0.088, -0.088, -0.088, 0.119, 0.023, -0.075, 0.078, 0.054, -0.058, -0.058, -0.057, 0.111, 0.012, 0.041, -0.089, 0.077, 0.199, 0.199, 0.2, 0.014, -0.088, -0.088, -0.09, -0.089, -0.09, -0.088, -0.087, -0.088, -0.087], [-0.074, -0.069, -0.072, -0.069, -0.066, -0.068, -0.069, -0.072, -0.066, 0.007, 0.246, 0.259, 0.26, 0.162, -0.066, -0.072, 0.008, 0.171, -0.059, -0.061, -0.055, 0.037, 0.158, -0.064, -0.062, -0.061, -0.051, -0.064, -0.062, 0.039, 0.169, -0.063, -0.069, -0.063, -0.057, -0.061, -0.062, 0.034, 0.164, -0.065, -0.061, -0.058, -0.054, -0.059, -0.052, 0.037, 0.154, -0.062, -0.069, -0.056, -0.065, -0.056, 0.04, 0.162, -0.051, -0.06, -0.067, -0.057, -0.058, 0.04, 0.168, -0.06, -0.068, -0.071, -0.061, -0.053, 0.025, 0.16, -0.057, -0.068, -0.067, -0.06, -0.053, 0.046, 0.179, -0.029, -0.025, -0.034, -0.046, -0.063, 0.005, 0.208, 0.228, 0.23, 0.233, 0.231, 0.137, -0.063, -0.057, -0.06, -0.058, -0.065, -0.068, -0.06, -0.06, -0.067], [-0.08, -0.08, -0.079, -0.08, -0.08, -0.08, -0.08, -0.08, -0.079, -0.079, 0.125, 0.215, 0.215, 0.215, 0.215, -0.011, 0.025, -0.075, 0.132, 0.016, -0.07, -0.07, -0.07, -0.073, -0.075, -0.075, 0.132, 0.014, -0.075, -0.075, -0.075, -0.075, -0.075, 0.128, 0.021, -0.07, -0.07, -0.071, -0.074, -0.075, -0.07, 0.128, 0.219, 0.216, 0.216, 0.216, 0.005, -0.073, 0.028, 0.119, 0.014, -0.075, -0.073, -0.074, 0.152, -0.006, 0.028, -0.076, -0.075, -0.074, -0.074, -0.075, 0.152, -0.004, 0.029, -0.057, -0.067, -0.072, -0.074, -0.073, 0.151, -0.005, 0.018, 0.109, 0.029, -0.046, -0.046, -0.045, 0.139, -0.012, -0.074, -0.074, 0.111, 0.194, 0.194, 0.194, -0.008, -0.073, -0.073, -0.074, -0.073, -0.074, -0.074, -0.074, -0.074, -0.074]], np.float32)
+DIGITS_L_IS = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 6, 6, 2, 5])
+# The HUD scales the game offers draw the "x, y" in one of two fonts:
+# (pitch at 1080p, first window from the comma, after it, window, digits).
+COORD_FONTS = ((6.0, -1.4, 5.5, 7, (6, 10), DIGITS, np.arange(10)), (7.11, -2.0, 5.0, 9, (8, 12), DIGITS_L, DIGITS_L_IS))
+PANEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parsec-panel")
+# Under `uv run --script` the script's own venv is first on PATH; its python3
+# lacks what omarchy-macro (run by parsec-panel too) needs, so children get
+# PATH without any venv's bin directory.
+CHILD_ENV = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+CHILD_ENV["PATH"] = os.pathsep.join(
+    p for p in os.environ.get("PATH", "").split(os.pathsep) if not os.path.exists(os.path.join(os.path.dirname(p), "pyvenv.cfg"))
+)
+
+
+class XImage(ctypes.Structure):
+    _fields_ = [
+        ("width", ctypes.c_int), ("height", ctypes.c_int), ("xoffset", ctypes.c_int), ("format", ctypes.c_int),
+        ("data", ctypes.c_void_p), ("byte_order", ctypes.c_int), ("bitmap_unit", ctypes.c_int),
+        ("bitmap_bit_order", ctypes.c_int), ("bitmap_pad", ctypes.c_int), ("depth", ctypes.c_int),
+        ("bytes_per_line", ctypes.c_int), ("bits_per_pixel", ctypes.c_int),
+    ]
+
+
+class Screen:
+    """Grabs the root window of one X server as an RGB array."""
+
+    def __init__(self, display: str) -> None:
+        self.X = X = ctypes.CDLL(ctypes.util.find_library("X11"))
+        X.XOpenDisplay.restype = ctypes.c_void_p
+        X.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        X.XDefaultRootWindow.restype = ctypes.c_ulong
+        X.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        X.XGetGeometry.argtypes = [ctypes.c_void_p, ctypes.c_ulong] + [ctypes.c_void_p] * 7
+        X.XGetImage.restype = ctypes.POINTER(XImage)
+        X.XGetImage.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_ulong, ctypes.c_int]
+        X.XFree.argtypes = [ctypes.c_void_p]
+        self.dpy = X.XOpenDisplay(display.encode())
+        if not self.dpy:
+            sys.exit(f"cannot open {display}")
+        self.root = X.XDefaultRootWindow(self.dpy)
+
+    def size(self) -> tuple[int, int]:
+        r, x, y = ctypes.c_ulong(), ctypes.c_int(), ctypes.c_int()
+        w, h, bw, depth = ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint()
+        self.X.XGetGeometry(self.dpy, self.root, ctypes.byref(r), ctypes.byref(x), ctypes.byref(y), ctypes.byref(w), ctypes.byref(h), ctypes.byref(bw), ctypes.byref(depth))
+        return w.value, h.value
+
+    def grab(self) -> np.ndarray:
+        w, h = self.size()
+        img = self.X.XGetImage(self.dpy, self.root, 0, 0, w, h, 0xFFFFFFFF, 2)  # ZPixmap
+        if not img:
+            raise OSError("XGetImage failed")
+        try:
+            c = img.contents
+            if c.bits_per_pixel != 32:
+                raise OSError(f"unsupported {c.bits_per_pixel} bpp")
+            raw = ctypes.string_at(c.data, c.bytes_per_line * c.height)
+            bgrx = np.frombuffer(raw, np.uint8).reshape(c.height, c.bytes_per_line // 4, 4)[:, : c.width]
+            return bgrx[:, :, 2::-1].copy()  # BGRX -> RGB
+        finally:
+            self.X.XFree(img.contents.data)
+            self.X.XFree(img)
+
+
+def game_rect(w: int, h: int) -> tuple[int, int, int, int]:
+    """The part of the screen the game picture covers: x, y, width, height."""
+    if w / h > GAME_ASPECT:
+        gw = round(h * GAME_ASPECT)
+        return (w - gw) // 2, 0, gw, h
+    gh = round(w / GAME_ASPECT)
+    return 0, (h - gh) // 2, w, gh
+
+
+def blue_mask(rgb: np.ndarray) -> np.ndarray:
+    r = rgb[:, :, 0].astype(np.int32)
+    g = rgb[:, :, 1].astype(np.int32)
+    b = rgb[:, :, 2].astype(np.int32)
+    d = b - r
+    gr = g - r
+    return (
+        (b >= g) & (g >= r) & (b >= VAL_MIN) & (d * 100 >= SAT_MIN * 100 * b)
+        & (gr * 1000 >= int(HUE_LO * 1000) * d) & (gr * 1000 <= int(HUE_HI * 1000) * d)
+    )
+
+
+def yellow_mask(rgb: np.ndarray) -> np.ndarray:
+    """Yellow name plates (Mimic): hue about 50-68, red and green close, blue low."""
+    r = rgb[:, :, 0].astype(np.int32)
+    g = rgb[:, :, 1].astype(np.int32)
+    b = rgb[:, :, 2].astype(np.int32)
+    hi = np.maximum(r, g)
+    lo = np.minimum(r, g)
+    return (b < lo) & (hi >= VAL_MIN) & ((hi - b) * 100 >= SAT_MIN * 100 * hi) & ((lo - b) * 100 >= 83 * (hi - b))
+
+
+def hues(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per pixel: hue in degrees, brightest channel, darkest channel."""
+    r = rgb[..., 0].astype(np.int32)
+    g = rgb[..., 1].astype(np.int32)
+    b = rgb[..., 2].astype(np.int32)
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    d = np.maximum(mx - mn, 1).astype(np.float32)
+    h = np.where(mx == r, (g - b) / d, np.where(mx == g, 2 + (b - r) / d, 4 + (r - g) / d)) * 60 % 360
+    return h, mx, mn
+
+
+def saturated(mx: np.ndarray, mn: np.ndarray) -> np.ndarray:
+    return (mx >= VAL_MIN) & ((mx - mn) * 100 >= int(SAT_MIN * 100) * mx)
+
+
+def hue_field(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per pixel, in integers: whether it has a strong colour, hue times
+    chroma (hd, degrees times max - min) and chroma. Hue proper would need
+    a division per pixel; hd compares against hue * chroma just as well."""
+    px = rgb.astype(np.int32)
+    r, g, b = px[..., 0], px[..., 1], px[..., 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    d = mx - mn
+    hd = np.where(r == mx, 60 * (g - b), np.where(g == mx, 120 * d + 60 * (b - r), 240 * d + 60 * (r - g)))
+    hd = np.where(hd < 0, hd + 360 * d, hd)
+    # The stand-out mask (stands_out) is costly and wanted rarely: made on demand.
+    return [saturated(mx, mn), hd, d, mx, None]
+
+
+def stands_out(field: list) -> np.ndarray:
+    """Text stands out from what is around it: brighter than the mean of a
+    window about a name's height. Sand or hide of the name's colour is not."""
+    if field[4] is None:
+        mx, win = field[3], 15
+        pad = np.pad(mx, ((win // 2 + 1, win // 2), (win // 2 + 1, win // 2)), mode="edge")
+        ii = pad.cumsum(0, dtype=np.int64).cumsum(1, dtype=np.int64)
+        around = ii[win:, win:] - ii[:-win, win:] - ii[win:, :-win] + ii[:-win, :-win]
+        field[4] = mx.astype(np.int64) * (win * win) - around >= TEXT_POP * win * win
+    return field[4]
+
+
+def hue_mask(rgb: np.ndarray, hue: float, tol: float = MOB_HUE_TOL, field: tuple | None = None) -> np.ndarray:
+    sat, hd, d, _, _ = field if field is not None else hue_field(rgb)
+    lo, hi = hue - tol, hue + tol
+    sel = (hd >= lo * d) & (hd <= hi * d)
+    if lo < 0:
+        sel |= hd >= (lo + 360) * d
+    if hi > 360:
+        sel |= hd <= (hi - 360) * d
+    return sat & sel
+
+
+def mob_mask(rgb: np.ndarray, hue: float, field: tuple) -> tuple[np.ndarray, bool]:
+    """Pixels of a taught name's hue, and whether they were cut down to
+    those brighter than their surround. Where the picture is full of the
+    colour (sand under an orange name) only text stands out, and the letters
+    then show as separate strokes; otherwise the plain colour keeps the
+    antialiased edges of the letters (grass under a yellow name)."""
+    m = hue_mask(rgb, hue, field=field)
+    # The mob being fought has its HP bar, of the name's colour, right under
+    # the name: off with it, or the two make one plate no name looks like.
+    m &= ~bar_zone(m)
+    if int(m.sum()) > 0.03 * m.size:
+        return m & stands_out(field), True
+    return m, False
+
+
+def bar_zone(m: np.ndarray) -> np.ndarray:
+    """An HP bar and its ragged edges: a line some 18+ px long (at 1080p)
+    and at least three rows thick, which no letter is; one row over it and
+    two under it, and a little to the sides, go with it, and line bits of
+    its top edge another row up."""
+    scale = m.shape[0] / 1080
+    n = max(8, round(18 * scale))
+    out = np.zeros_like(m)
+    if m.shape[1] < n:
+        return out
+    # Most of the picture has no such line: work on the rows that do.
+    c = np.pad(m.astype(np.int32).cumsum(axis=1), ((0, 0), (1, 0)))
+    rows = np.nonzero(((c[:, n:] - c[:, :-n]) == n).any(axis=1))[0]
+    if len(rows) < 3:
+        return out
+    y0, y1 = max(int(rows[0]) - 4, 0), min(int(rows[-1]) + 4, m.shape[0])
+    sub = m[y0:y1]
+    runs = long_runs(sub, n)
+    core = runs.copy()
+    core[1:-1] &= runs[:-2] & runs[2:]
+    core[0] = core[-1] = False
+    if not core.any():
+        return out
+    zone = core.copy()
+    for dy in (-1, 1, 2):  # one row over, two under
+        zone |= np.roll(core, dy, axis=0)
+    side = zone.copy()
+    for dx in range(1, 7):
+        side |= np.roll(zone, dx, axis=1) | np.roll(zone, -dx, axis=1)
+    out[y0:y1] = side | (np.roll(side, -1, axis=0) & long_runs(sub, max(5, round(7 * scale))))
+    return out
+
+
+def long_runs(m: np.ndarray, n: int) -> np.ndarray:
+    """Pixels in horizontal runs of at least n set pixels."""
+    w = m.shape[1]
+    if w < n:
+        return np.zeros_like(m)
+    c = np.pad(m.astype(np.int32).cumsum(axis=1), ((0, 0), (1, 0)))
+    full = (c[:, n:] - c[:, :-n]) == n  # a run of n starts here
+    f = np.pad(full.astype(np.int32).cumsum(axis=1), ((0, 0), (1, 0)))
+    x = np.arange(w)
+    lo, hi = np.clip(x - n + 1, 0, w - n + 1), np.clip(x + 1, 0, w - n + 1)
+    return (f[:, hi] - f[:, lo]) > 0
+
+
+def plate_colour(rgb: np.ndarray, mask: np.ndarray) -> tuple[float, int, list[int]]:
+    """Of the lit pixels of a name: mean hue (around the circle), the
+    brightness most of them reach, and the mean colour."""
+    h, mx, _ = hues(rgb[mask])
+    a = np.radians(h)
+    hue = math.degrees(math.atan2(float(np.sin(a).mean()), float(np.cos(a).mean()))) % 360
+    return hue, int(np.percentile(mx, 90)), [int(v) for v in rgb[mask].mean(axis=0)]
+
+
+def shape(m: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
+    """The lit mask of a name as a small grid of fill ratios, zero mean and
+    unit length, so two names compare by a dot product."""
+    cols, rows = grid
+    ys = np.linspace(0, m.shape[0], rows + 1).astype(int)
+    xs = np.linspace(0, m.shape[1], cols + 1).astype(int)
+    out = np.array([[m[ys[i] : max(ys[i + 1], ys[i] + 1), xs[j] : max(xs[j + 1], xs[j] + 1)].mean() for j in range(cols)] for i in range(rows)], np.float32)
+    out -= out.mean()
+    n = float(np.linalg.norm(out))
+    return (out / n if n else out).ravel()
+
+
+def text_like(m: np.ndarray, scale: float) -> bool:
+    """A line of text is several narrow strokes with gaps between; a
+    highlight on a hide or a piece of armour is one or two blobs."""
+    cols = m.any(axis=0)
+    runs = int(np.count_nonzero(cols[1:] & ~cols[:-1]) + int(cols[0]))
+    if runs < 3 or cols.sum() / runs > 7 * scale:
+        return False
+    # Two things joined into one: a gap wider than a space between words.
+    gap = best = 0
+    for c in cols:
+        gap = 0 if c else gap + 1
+        best = max(best, gap)
+    return best < 9 * scale
+
+
+def text_plates(game: np.ndarray, mask: np.ndarray, scale: float, width: tuple[float, float], lit_min: float | None, dark_ground: bool = True, strict: bool = False, strokes: bool = False) -> list[dict]:
+    """Name plates in the game picture: clusters of the masked colour shaped
+    like a line of text, as wide as width says (px at 1080p) and, with
+    lit_min, bright enough: dry grass is the same yellow as a Mimic's name,
+    but dim. With dark_ground, only over dark ground (the world map's labels
+    on parchment are the Gamekeeper's cyan); taught mobs may stand on sand."""
+    gh, gw = mask.shape
+    for x0, y0, x1, y1 in EXCLUDE:
+        mask[int(y0 * gh) : int(y1 * gh), int(x0 * gw) : int(x1 * gw)] = False
+
+    cell = max(2, round(CELL * scale))
+    ch, cw = gh // cell, gw // cell
+    counts = mask[: ch * cell, : cw * cell].reshape(ch, cell, cw, cell).sum(axis=(1, 3))
+    active = set(map(tuple, np.argwhere(counts >= 2).tolist()))
+    plates = []
+    while active:
+        start = active.pop()
+        stack, members = [start], [start]
+        while stack:
+            cy, cx = stack.pop()
+            for dy in (-1, 0, 1):
+                for dx in (-2, -1, 0, 1, 2):
+                    n = (cy + dy, cx + dx)
+                    if n in active:
+                        active.remove(n)
+                        stack.append(n)
+                        members.append(n)
+        ys = [m[0] for m in members]
+        xs = [m[1] for m in members]
+        px = int(sum(counts[m] for m in members))
+        x, y = min(xs) * cell, min(ys) * cell
+        w, h = (max(xs) - min(xs) + 1) * cell, (max(ys) - min(ys) + 1) * cell
+        if strict and h > 14 * scale:
+            # A name over a mob of a like colour picks up stray pixels of its
+            # hide below: keep the band of dense rows, where the text is, if
+            # it is one line holding nearly all of the pixels.
+            rows = mask[y : y + h, x : x + w].sum(axis=1)
+            dense = rows >= 0.3 * rows.max()
+            top = bot = best = 0
+            for i, on in enumerate(list(dense) + [False]):
+                if on and (i == 0 or not dense[i - 1]):
+                    start = i
+                elif not on and i and dense[i - 1] and i - start > best:
+                    top, bot, best = start, i, i - start
+            band, rest = rows[top:bot].sum(), rows.sum() - rows[top:bot].sum()
+            rest_rows = len(rows) - (bot - top)
+            if bot - top > 14 * scale or band < 0.5 * rows.sum() or (rest_rows and band / (bot - top) < 3 * rest / rest_rows):
+                continue
+            y, h = y + top, bot - top
+            px = int(mask[y : y + h, x : x + w].sum())
+        # A line of text: wide, low, enough lit pixels.
+        if not (h <= 30 * scale and 12 * scale <= w <= 260 * scale and w >= 2 * h and px >= 25 * scale * scale):
+            continue
+        # Over the game world the name sits on dark ground; the same cyan on
+        # a light background is UI (the world map's labels on parchment).
+        box = (slice(max(y - 3, 0), y + h + 3), slice(max(x - 3, 0), x + w + 3))
+        around = game[box].max(axis=2)[~mask[box]]
+        if dark_ground and around.size and float(around.mean()) > BACKGROUND_MAX:
+            continue
+        # Exact extent of the lit pixels (the cells round it up).
+        ys_, xs_ = np.nonzero(mask[y : y + h, x : x + w])
+        x, y = x + int(xs_.min()), y + int(ys_.min())
+        w, h = int(xs_.max() - xs_.min()) + 1, int(ys_.max() - ys_.min()) + 1
+        if not width[0] * scale <= w <= width[1] * scale:
+            continue
+        if lit_min is not None:
+            lit = game[y : y + h, x : x + w][mask[y : y + h, x : x + w]].max(axis=1)
+            if (lit >= lit_min).sum() < max(3, 0.1 * lit.size):
+                continue
+        if strict:
+            if strokes and not text_like(mask[y : y + h, x : x + w], scale):
+                continue
+            # Text stands out from what is behind it; a patch of hide or
+            # ground of the name's colour is barely brighter than its surround.
+            box = (slice(max(y - 2, 0), y + h + 2), slice(max(x - 2, 0), x + w + 2))
+            bright = game[box].max(axis=2)
+            inside, around = bright[mask[box]], bright[~mask[box]]
+            if not around.size:
+                continue
+            # A deep red name (an aggressive mob) is no brighter than the sand
+            # behind it, but far more strongly coloured.
+            px_ = game[box].astype(np.int32)
+            sat = (px_.max(axis=2) - px_.min(axis=2)) / np.maximum(px_.max(axis=2), 1)
+            # An HP bar right under the name is no part of what is behind it.
+            behind = ~mask[box] & ~long_runs(sat >= VIVID, max(5, round(7 * scale)))
+            if not behind.any():
+                continue
+            sat_in, sat_out = float(sat[mask[box]].mean()), float(sat[behind].mean())
+            pop = float(inside.mean()) - float(bright[behind].mean())
+            if pop < TEXT_CONTRAST and not (sat_in >= VIVID and sat_in - sat_out >= 0.3):
+                continue
+        plates.append({"x": x, "y": y, "w": w, "h": h, "pixels": px})
+    return plates
+
+
+def detect(rgb: np.ndarray, kind: str = "gamekeeper", mobs: list[dict] | None = None) -> list[dict]:
+    """Name plates on the screen, biggest first, in screen pixels: the
+    Gamekeeper's blue one, with kind="mimic" the yellow Mimic ones, with
+    kind="mob" those of the taught mobs (each hit says which, and its reach)."""
+    sh, sw, _ = rgb.shape
+    gx, gy, gw, gh = game_rect(sw, sh)
+    scale = gh / 1080
+    game = rgb[gy : gy + gh, gx : gx + gw]
+    if kind == "mob":
+        plates = []
+        field = hue_field(game) if mobs else None
+        # Mobs taught with names of one colour (the same mob taught twice, or
+        # one kind at several levels) share the mask and the search.
+        groups: dict[int, list[dict]] = {}
+        for mob in mobs or []:
+            key = next((k for k in groups if abs(k - mob["hue"]) <= 2), None)
+            groups.setdefault(mob["hue"] if key is None else key, []).append(mob)
+        for hue, group in groups.items():
+            mask, strokes = mob_mask(game, hue, field)
+            if int(mask.sum()) > 0.03 * mask.size:
+                continue  # the ground stands out in this colour here: too much to search
+            lo = min(m["width"] for m in group) * (1 - MOB_WIDTH_TOL)
+            hi = max(m["width"] for m in group) * (1 + MOB_WIDTH_TOL)
+            found = text_plates(game, mask, scale, (lo, hi), min(170, 0.8 * min(m["v90"] for m in group)), dark_ground=False, strict=True, strokes=strokes)
+            for mob, p in ((m, p) for m in group for p in found):
+                w = mob["width"] * scale
+                if not w * (1 - MOB_WIDTH_TOL) <= p["w"] <= w * (1 + MOB_WIDTH_TOL):
+                    continue
+                score = float(np.dot(mob["template"], shape(mask[p["y"] : p["y"] + p["h"], p["x"] : p["x"] + p["w"]], tuple(mob["grid"]))))
+                if score < MOB_SHAPE_MIN:
+                    continue
+                # The same mob taught twice: one hit, stopping at the nearer reach.
+                twin = next((q for q in plates if abs(q["x"] - p["x"]) < 6 * scale and abs(q["y"] - p["y"]) < 6 * scale), None)
+                if twin is None:
+                    plates.append(dict(p, mob=mob["id"], near=mob["near"], score=round(score, 2)))
+                elif mob["near"] < twin["near"] or (mob["near"] == twin["near"] and score > twin["score"]):
+                    twin.update(mob=mob["id"], near=mob["near"], score=round(score, 2))
+    else:
+        mask = yellow_mask(game) if kind == "mimic" else blue_mask(game)
+        plates = text_plates(game, mask, scale, MIMIC_WIDTH if kind == "mimic" else NAME_WIDTH, 170 if kind == "mimic" else None)
+        if kind == "gamekeeper":
+            # One line of text, 7-10 px at 1080p; a taller cyan patch (a skill
+            # effect at the character's feet) is not his name.
+            plates = [q for q in plates if q["h"] <= 12 * scale]
+    hits = [dict(p, x=gx + p["x"], y=gy + p["y"],
+                 # Name centre, relative to the crosshair in the middle of the game picture.
+                 dx=round(gx + p["x"] + p["w"] / 2 - (gx + gw / 2)), dy=round(gy + p["y"] + p["h"] / 2 - (gy + gh / 2)))
+            for p in plates]
+    return sorted(hits, key=lambda hit: -hit["pixels"])
+
+
+def load_mobs() -> list[dict]:
+    try:
+        with open(MOBS_FILE) as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return []
+    mobs = [dict(m, template=np.array(m["template"], np.float32)) for m in raw if isinstance(m, dict) and "template" in m]
+    # The same name taught more than once, from different distances: it is
+    # one mob, to be approached as close as the nearest teaching says.
+    for m in mobs:
+        same = [o for o in mobs if abs(wrap(math.radians(o["hue"] - m["hue"]))) <= math.radians(6) and abs(o["width"] - m["width"]) <= 0.1 * m["width"]]
+        # Taught from afar, the name was far on screen too: a melee reach is
+        # NEAR at most, and walking into the mob stops the character anyway.
+        # Live on main the macro only hit once the mob's body stopped the
+        # character, names 20 px apart; at the taught 60-120 the blow fell
+        # short. Walk in until blocked, or the names nearly meet.
+        m["near"] = min(MOB_REACH, min(o["near"] for o in same))
+    return mobs
+
+
+def teach(screen: Screen, instance: str) -> int:
+    """Learn the mob the character is looking at: the name plate nearest the
+    crosshair, of any colour. The character should stand as close as it
+    needs to hit the mob, so that the name's distance on screen can serve as
+    the reach. Appends to MOBS_FILE and saves a thumbnail; prints the entry."""
+    rgb = screen.grab()
+    sh, sw, _ = rgb.shape
+    gx, gy, gw, gh = game_rect(sw, sh)
+    scale = gh / 1080
+    game = rgb[gy : gy + gh, gx : gx + gw]
+    field = hue_field(game)
+    found = []
+    # One colour at a time, as the hunt will look: a name next to something
+    # else of a strong colour (a chest) would otherwise merge with it. Names
+    # are lit (their core near white); grass of the same colour is dim.
+    for hue in range(0, 360, 4):
+        m, strokes = mob_mask(game, hue, field)
+        # Lit enough: dark red names (aggressive mobs) reach only about 140.
+        for p in text_plates(game, m, scale, (12, 260), TEACH_LIT, dark_ground=False, strict=True, strokes=strokes):
+            fill = float(m[p["y"] : p["y"] + p["h"], p["x"] : p["x"] + p["w"]].mean())
+            # A bar (the HP bar over the character) is solid or tall; a name
+            # is one line of text, 8-12 px at 1080p.
+            # The shortest name ("Lv. 1 X") is some 30 px wide.
+            if not 0.1 <= fill <= 0.7 or p["h"] > 14 * scale or p["w"] < 30 * scale:
+                continue
+            # Dim lit pixels pass only for a deep colour (dark red names), not
+            # for pale grass or a shaded part of a name.
+            reg = (slice(p["y"], p["y"] + p["h"]), slice(p["x"], p["x"] + p["w"]))
+            _, v90, rgb_mean = plate_colour(game[reg], m[reg])
+            if v90 < 170 and (max(rgb_mean) - min(rgb_mean)) / max(max(rgb_mean), 1) < VIVID:
+                continue
+            dx, dy = p["x"] + p["w"] / 2 - gw / 2, p["y"] + p["h"] / 2 - gh / 2
+            if dx * dx + dy * dy > (0.45 * gh) ** 2:
+                continue
+            # The character itself stands under the crosshair: a glint on
+            # its armour is not a name.
+            if abs(dx) < 70 * scale and -100 * scale < dy < 150 * scale:
+                continue
+            # The same name shows in a few neighbouring passes, whole in the
+            # middle one and in parts at the edges: keep the fullest.
+            twin = next((f for f in found if abs(f[1]["x"] + f[1]["w"] / 2 - p["x"] - p["w"] / 2) < 10 * scale and abs(f[1]["y"] - p["y"]) < 10 * scale), None)
+            if twin is None:
+                found.append([math.hypot(dx, dy - CHAR_DY * scale), p, m, hue])
+            elif p["pixels"] > twin[1]["pixels"]:
+                twin[:] = [math.hypot(dx, dy - CHAR_DY * scale), p, m, hue]
+    # A name floats over its mob: a lit patch on the body right under
+    # another plate (red or pale markings) is not the name.
+    found = [f for f in found if not any(
+        o is not f and 8 * scale < f[1]["y"] - o[1]["y"] < 90 * scale
+        and abs(o[1]["x"] + o[1]["w"] / 2 - f[1]["x"] - f[1]["w"] / 2) < 40 * scale for o in found)]
+    if not found:
+        print(json.dumps({"event": "teach-failed", "reason": "no name plate near the crosshair"}), flush=True)
+        return 1
+    reason = "no name plate near the crosshair"
+
+    def again(hue: float, p: dict, v90: float) -> dict | None:
+        """The plate as the hunt will see it: through the hue mask."""
+        m, strokes = mob_mask(game, hue, field)
+        for q in text_plates(game, m, scale, (12, 260), min(170, 0.8 * v90), dark_ground=False, strict=True, strokes=strokes):
+            if abs(q["x"] + q["w"] / 2 - p["x"] - p["w"] / 2) < 10 * scale and abs(q["y"] - p["y"]) < 8 * scale:
+                return q
+        return None
+
+    for d, p, m, pass_hue in sorted(found, key=lambda f: f[0]):
+        region = (slice(p["y"], p["y"] + p["h"]), slice(p["x"], p["x"] + p["w"]))
+        hue, v90, colour = plate_colour(game[region], m[region])
+        mask, _ = mob_mask(game, hue, field)
+        q = again(hue, p, v90)
+        if q is None:
+            # The mean hue may pull in a like-coloured hide; the pass found it.
+            hue, q = pass_hue, again(pass_hue, p, v90)
+            mask, _ = mob_mask(game, hue, field)
+        if q is None:
+            reason = "the name's colour is not steady"
+            continue
+        p = q
+        break
+    else:
+        print(json.dumps({"event": "teach-failed", "reason": reason}), flush=True)
+        return 1
+    width = p["w"] / scale
+    grid = (max(6, round(width / 4)), 4)
+    template = shape(mask[p["y"] : p["y"] + p["h"], p["x"] : p["x"] + p["w"]], grid)
+    mobs = []
+    try:
+        with open(MOBS_FILE) as f:
+            mobs = [m for m in json.load(f) if isinstance(m, dict)]
+    except (OSError, ValueError):
+        pass
+    num = 1 + max((int(m["id"].split("-")[1]) for m in mobs if str(m.get("id", "")).startswith("mob-")), default=0)
+    thumbs = os.path.join(os.path.dirname(MOBS_FILE), "mobs")
+    os.makedirs(thumbs, exist_ok=True)
+    thumb = os.path.join(thumbs, f"mob-{num}.png")
+    cx, top = p["x"] + p["w"] // 2, p["y"]
+    # The name and the whole mob under it.
+    crop = game[max(top - round(20 * scale), 0) : top + round(170 * scale), max(cx - round(110 * scale), 0) : cx + round(110 * scale)]
+    write_png(thumb, np.ascontiguousarray(crop))
+    write_png(os.path.join(thumbs, f"mob-{num}-frame.png"), rgb)  # the whole picture, to check the hunt's eyes later
+    entry = {
+        "id": f"mob-{num}", "hue": round(hue, 1), "colour": colour, "v90": v90,
+        "width": round(width, 1), "height": round(p["h"] / scale, 1),
+        "near": round(max(60.0, min(NEAR, 1.15 * d / scale))), "grid": list(grid), "template": [round(float(v), 4) for v in template],
+        "thumb": thumb, "instance": instance, "taught": time.strftime("%Y-%m-%d %H:%M"),
+    }
+    mobs.append(entry)
+    tmp = MOBS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(mobs, f, indent=1)
+    os.replace(tmp, MOBS_FILE)
+    print(json.dumps({"event": "taught", **{k: v for k, v in entry.items() if k != "template"}}), flush=True)
+    return 0
+
+
+def mark(rgb: np.ndarray, hits: list[dict]) -> np.ndarray:
+    out = rgb.copy()
+    for hit in hits:
+        x0, y0 = max(hit["x"] - 4, 0), max(hit["y"] - 4, 0)
+        x1, y1 = min(hit["x"] + hit["w"] + 4, out.shape[1] - 1), min(hit["y"] + hit["h"] + 4, out.shape[0] - 1)
+        for t in range(2):
+            out[y0 + t, x0:x1] = out[y1 - t, x0:x1] = (255, 0, 255)
+            out[y0:y1, x0 + t] = out[y0:y1, x1 - t] = (255, 0, 255)
+    return out
+
+
+def write_png(path: str, rgb: np.ndarray) -> None:
+    h, w, _ = rgb.shape
+    raw = b"".join(b"\x00" + rgb[y].tobytes() for y in range(h))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return len(data).to_bytes(4, "big") + kind + data + zlib.crc32(kind + data).to_bytes(4, "big")
+
+    head = w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes((8, 2, 0, 0, 0))
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", head) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def read_ppm(path: str) -> np.ndarray:
+    with open(path, "rb") as f:
+        data = f.read()
+    fields, pos = [], 0
+    while len(fields) < 4:  # magic, width, height, maxval; comments skipped
+        while data[pos : pos + 1].isspace():
+            pos += 1
+        if data[pos : pos + 1] == b"#":
+            pos = data.index(b"\n", pos)
+            continue
+        end = pos
+        while not data[end : end + 1].isspace():
+            end += 1
+        fields.append(data[pos:end])
+        pos = end
+    if fields[0] != b"P6" or fields[3] != b"255":
+        sys.exit(f"{path}: need an 8-bit binary PPM (gm convert in.png out.ppm)")
+    w, h = int(fields[1]), int(fields[2])
+    return np.frombuffer(data[pos + 1 : pos + 1 + w * h * 3], np.uint8).reshape(h, w, 3)
+
+
+def log(event: str, **fields) -> None:
+    print(json.dumps({"event": event, "time": time.strftime("%H:%M:%S"), **fields}), flush=True)
+
+
+class Input:
+    """W, the left button and turning, through XTEST on the instance's server."""
+
+    def __init__(self, screen: Screen) -> None:
+        self.screen = screen
+        self.xt = xt = ctypes.CDLL(ctypes.util.find_library("Xtst"))
+        xt.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+        xt.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+        xt.XTestFakeRelativeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+        screen.X.XFlush.argtypes = [ctypes.c_void_p]
+        self.keys_down: set[int] = set()
+
+    def _flush(self) -> None:
+        self.screen.X.XFlush(self.screen.dpy)
+
+    def key(self, code: int, down: bool) -> None:
+        self.xt.XTestFakeKeyEvent(self.screen.dpy, code, int(down), 0)
+        self._flush()
+        (self.keys_down.add if down else self.keys_down.discard)(code)
+
+    def turn(self, units: int, seconds: float = 0.0) -> None:
+        """Relative mouse motion. Spread over seconds, it moves like a hand on
+        the mouse: a slow start, faster, a slow stop."""
+        if seconds > 0:
+            n, sent = max(1, round(seconds / 0.01)), 0
+            for i in range(1, n + 1):
+                s = i / n
+                d = round(units * s * s * (3 - 2 * s)) - sent
+                if d:
+                    self.xt.XTestFakeRelativeMotionEvent(self.screen.dpy, d, 0, 0)
+                    self._flush()
+                    sent += d
+                time.sleep(0.01)
+            return
+        while units:
+            d = max(-40, min(40, units))
+            self.xt.XTestFakeRelativeMotionEvent(self.screen.dpy, d, 0, 0)
+            self._flush()
+            units -= d
+            time.sleep(0.002)
+
+    def pitch(self, units: int, seconds: float) -> None:
+        """Vertical mouse motion, spread like turn(): positive tilts the camera
+        to look down from above."""
+        n, sent = max(1, round(seconds / 0.01)), 0
+        for i in range(1, n + 1):
+            s = i / n
+            d = round(units * s * s * (3 - 2 * s)) - sent
+            if d:
+                self.xt.XTestFakeRelativeMotionEvent(self.screen.dpy, 0, d, 0)
+                self._flush()
+                sent += d
+            time.sleep(0.01)
+
+    def button(self, down: bool) -> None:
+        self.xt.XTestFakeButtonEvent(self.screen.dpy, 1, int(down), 0)
+        self._flush()
+
+    def click(self, x: int, y: int) -> None:
+        """A left click at (x, y) on the screen (the death window shows a
+        pointer, so the game takes it where it is)."""
+        self.xt.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+        self.xt.XTestFakeMotionEvent(self.screen.dpy, -1, int(x), int(y), 0)
+        self._flush()
+        time.sleep(0.15)
+        self.button(True)
+        time.sleep(0.08)
+        self.button(False)
+
+    def button_held(self) -> bool:
+        X = self.screen.X
+        X.XQueryPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong] + [ctypes.c_void_p] * 7
+        r, child = ctypes.c_ulong(), ctypes.c_ulong()
+        rx, ry, wx, wy = ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
+        mask = ctypes.c_uint()
+        X.XQueryPointer(self.screen.dpy, self.screen.root, ctypes.byref(r), ctypes.byref(child), ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx), ctypes.byref(wy), ctypes.byref(mask))
+        return bool(mask.value & (1 << 8))  # Button1Mask
+
+    def release(self) -> None:
+        for code in list(self.keys_down):
+            self.key(code, False)
+
+
+def instance_state(instance: str) -> dict:
+    out = subprocess.run([PANEL, "status"], capture_output=True, text=True, env=CHILD_ENV).stdout
+    return next((i for i in json.loads(out or "{}").get("instances", []) if i.get("name") == instance), {})
+
+
+def _cell(gray: np.ndarray, x: float, top: int, bot: int, w: int = 7, grid: tuple[int, int] = (6, 10)) -> np.ndarray:
+    gw, gh = grid
+    x0 = int(np.floor(x))
+    sub = gray[max(top - 1, 0) : bot + 1, x0 : x0 + w].astype(np.float32)
+    if sub.shape[1] < w:
+        return np.zeros(gw * gh, np.float32)
+    frac = x - x0
+    sub = (1 - frac) * sub[:, :-1] + frac * sub[:, 1:]
+    ys = np.linspace(0, sub.shape[0], gh + 1)
+    xs = np.linspace(0, sub.shape[1], gw + 1)
+    out = np.array([[sub[int(ys[i]) : max(int(ys[i + 1]), int(ys[i]) + 1), int(xs[j]) : max(int(xs[j + 1]), int(xs[j]) + 1)].mean() for j in range(gw)] for i in range(gh)])
+    out -= out.mean()
+    n = np.linalg.norm(out)
+    return (out / n if n else out).ravel()
+
+
+def _read_box(sub: np.ndarray, mx: np.ndarray, mn: np.ndarray, neutral: np.ndarray, by: int, bx: int, bh: int, bw: int, gh: int) -> tuple[int, int, float] | None:
+    """Read the "x, y" in the box found at (by, bx)."""
+    # The whole box around the patch found (a larger HUD makes it larger):
+    # rows and columns with no colour, partly dark (its grey rim is not).
+    boxy = neutral
+    dark = mx < 60
+
+    def grow(lo: int, hi: int, n: int, most: int, ok) -> tuple[int, int]:
+        lim_lo, lim_hi = max(lo - most, 0), min(hi + most, n)
+        while lo > lim_lo and ok(lo - 1):
+            lo -= 1
+        while hi < lim_hi and ok(hi):
+            hi += 1
+        return lo, hi
+
+    ya, yb = grow(by, by + bh, sub.shape[0], bh, lambda r: boxy[r, bx : bx + bw].mean() >= 0.95 and dark[r, bx : bx + bw].mean() >= 0.3)
+    xa, xb = grow(bx, bx + bw, sub.shape[1], bw // 2, lambda c: boxy[ya:yb, c].mean() >= 0.95 and dark[ya:yb, c].mean() >= 0.3)
+    gray = np.where(neutral, mn, 0)[ya:yb, xa:xb]
+    ink = gray >= 100
+    # Text rows: the comma's foot below the line has only a pixel or two.
+    rows = np.nonzero(ink.sum(axis=1) >= 4)[0]
+    if len(rows) < 5:
+        return None
+    runs, start, prev = [], rows[0], rows[0]
+    for r in rows[1:]:
+        if r != prev + 1:
+            runs.append((start, prev + 1))
+            start = r
+        prev = r
+    runs.append((start, prev + 1))
+    top, bot = max(runs, key=lambda r: r[1] - r[0])
+    if not 6 * gh / 1080 <= bot - top <= 22 * gh / 1080:
+        return None
+    line = np.nonzero(ink[top:bot].any(axis=0))[0]
+    below = np.nonzero(ink[bot : bot + 3].any(axis=0))[0]
+    below = below[(below > line.min() + 8) & (below < line.max() - 8)]
+    if len(below) == 0:
+        return None
+    cx = int(below[0])
+    best_read = None
+    for pitch, before, after, w, grid, table, digit in COORD_FONTS:
+        pitch *= gh / 1080
+        starts = [cx - (4 - i) * pitch + before for i in range(4)] + [cx + after + i * pitch for i in range(4)]
+        text, worst = "", 1.0
+        for st in starts:
+            best, sc_best = 0, -1.0
+            for off in (-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5):
+                sc = table @ _cell(gray, st + off, top, bot, w, grid)
+                j = int(sc.argmax())
+                if sc[j] > sc_best:
+                    best, sc_best = int(digit[j]), float(sc[j])
+            text += str(best)
+            worst = min(worst, sc_best)
+        if best_read is None or worst > best_read[2]:
+            best_read = (int(text[:4]), int(text[4:]), worst)
+    return best_read
+
+
+def read_coords(rgb: np.ndarray) -> tuple[int, int, float] | None:
+    """The "x, y" under the minimap: (x, y, worst digit score), or None.
+
+    Digits are monospaced, 6 px apart at 1080p at the game's smallest HUD
+    scale and 7 px at a larger one (COORD_FONTS); the comma (the only ink
+    below the line) anchors four digits on either side of it."""
+    sh, sw, _ = rgb.shape
+    gx, gy, gw, gh = game_rect(sw, sh)
+    x0, y0 = int(gx + COORD_BOX[0] * gw), int(gy + COORD_BOX[1] * gh)
+    sub = rgb[y0 : int(gy + COORD_BOX[3] * gh), x0 : int(gx + COORD_BOX[2] * gw)].astype(np.int32)
+    # The digits sit in a small dark grey box; the ground around the minimap
+    # can be just as bright as they are. Find the box first: a patch with no
+    # colour in it, mostly dark, with some white. Other text on dark ground
+    # (a quest line) looks the same: the few best patches are all read.
+    mx, mn = sub.max(axis=2), sub.min(axis=2)
+    neutral = mx - mn < 40
+    bw, bh = round(50 * gh / 1080), round(11 * gh / 1080)
+
+    def share(m: np.ndarray) -> np.ndarray:
+        ii = np.pad(m.astype(np.int32).cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+        return (ii[bh:, bw:] - ii[:-bh, bw:] - ii[bh:, :-bw] + ii[:-bh, :-bw]) / (bw * bh)
+
+    white = share(neutral & (mn >= 110))
+    score = np.where((share(neutral) >= 0.97) & (white >= 0.08) & (share(mx < 50) >= 0.4), white, -1.0)
+    best_read = None
+    for _ in range(6):
+        by, bx = np.unravel_index(int(score.argmax()), score.shape)
+        if score[by, bx] < 0:
+            break
+        score[max(by - 2 * bh, 0) : by + 2 * bh, max(bx - bw, 0) : bx + bw] = -1.0
+        r = _read_box(sub, mx, mn, neutral, int(by), int(bx), bh, bw, gh)
+        if r is not None and (best_read is None or r[2] > best_read[2]):
+            best_read = r
+    return best_read
+
+
+def hp_fraction(rgb: np.ndarray) -> float | None:
+    """How full the character's red HP bar is, or None when it cannot be told.
+    It sits right over the blue MP bar at the bottom of the screen; both
+    fill from the left."""
+    h, w, _ = rgb.shape
+    y0 = int(h * 0.75)
+    a = rgb[y0:].astype(np.int16)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    blue = (b > 120) & (b > r + 60) & (b > g + 20)
+    # The bar is one long solid stretch of blue (chat links are blue too,
+    # but in short bits): per row, the longest unbroken run.
+    best = []
+    for y in np.nonzero(blue.sum(axis=1) > 0.05 * w)[0]:
+        d = np.diff(np.concatenate(([0], blue[y].astype(np.int8), [0])))
+        starts, ends = np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]
+        k = int(np.argmax(ends - starts))
+        if ends[k] - starts[k] > 0.05 * w:
+            best.append((int(y), int(starts[k]), int(ends[k])))
+    if len(best) < 4:
+        return None  # no MP bar (or no MP): nothing to go by
+    top = best[0][0]
+    # Rows of the bar itself (its numbers break it into bits on some rows).
+    tall = max(t[0] for t in best if t[0] < top + 30) - top + 1
+    _, x0, x1 = max(best[: len([t for t in best if t[0] < top + 30])], key=lambda t: t[2] - t[1])
+    band = slice(max(top - round(2.3 * tall), 0), max(top - round(0.5 * tall), 1))
+    red = (r[band, x0:x1] > 110) & (r[band, x0:x1] > g[band, x0:x1] + 60) & (r[band, x0:x1] > b[band, x0:x1] + 60)
+    return float(red.any(axis=0).mean())
+
+
+def find_revive(rgb: np.ndarray) -> tuple[int, int, float] | None:
+    """The death window's Revive button: (x, y) of its middle on the screen
+    and how well it matched, or None. Searched in the middle of the picture,
+    at half size, at a few scales (the HUD scale sets its size)."""
+    h, w, _ = rgb.shape
+    gx, gy, gw, gh = game_rect(w, h)
+    x0, y0 = gx + gw // 6, gy + gh // 6
+    sub = rgb[y0 : gy + gh * 5 // 6, x0 : gx + gw * 5 // 6].astype(np.float32).mean(axis=2)
+    H, W = sub.shape[0] // 2, sub.shape[1] // 2
+    img = sub[: H * 2, : W * 2].reshape(H, 2, W, 2).mean(axis=(1, 3))
+    ii = np.pad(img.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    ii2 = np.pad((img * img).cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    f_img = np.fft.rfft2(img)
+    best = None
+    for s in (0.7, 0.75, 0.8, 0.85, 0.9, 1.0, 1.1, 1.2, 1.3):
+        s *= gh / 1063
+        th, tw = max(4, round(15 * s)), max(8, round(56 * s))
+        t = REVIVE_TPL[np.clip(((np.arange(th) + 0.5) / s - 0.5).round().astype(int), 0, 14)][:, np.clip(((np.arange(tw) + 0.5) / s - 0.5).round().astype(int), 0, 55)]
+        if th >= H or tw >= W:
+            continue
+        n, t0 = th * tw, t - t.mean()
+        k = np.zeros_like(img)
+        k[:th, :tw] = t0[::-1, ::-1]
+        conv = np.fft.irfft2(f_img * np.fft.rfft2(k), s=img.shape)[th - 1 :, tw - 1 :]
+        S = ii[th:, tw:] - ii[:-th, tw:] - ii[th:, :-tw] + ii[:-th, :-tw]
+        S2 = ii2[th:, tw:] - ii2[:-th, tw:] - ii2[th:, :-tw] + ii2[:-th, :-tw]
+        var = S2 - S * S / n
+        c = conv[: S.shape[0], : S.shape[1]] / (np.sqrt(np.maximum(var, 1e-3)) * float(np.sqrt((t0 * t0).sum())))
+        c[var < n * 25] = -1  # a flat patch is no button
+        by, bx = divmod(int(c.argmax()), c.shape[1])
+        if best is None or c[by, bx] > best[2]:
+            best = (round(x0 + (bx + tw / 2) * 2), round(y0 + (by + th / 2) * 2), float(c[by, bx]))
+    return best if best is not None and best[2] >= REVIVE_MIN else None
+
+
+def wrap(a: float) -> float:
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def snapshot(snaps: str, rgb: np.ndarray, hits: list[dict], tag: str = "") -> None:
+    path = os.path.join(snaps, time.strftime("%Y%m%d-%H%M%S") + tag + ".png")
+    write_png(path, mark(rgb, hits))
+    log("snapshot", path=path)
+
+
+class Follower:
+    """Keeps the character on a target while the instance's macro does the
+    hitting. Mimics come to the character: it only turns, toward the nearest
+    one, when none is in front of it. The Gamekeeper it runs to: turns until
+    the name is over the crosshair, walks with W while it is far, stops close
+    instead of running through. Once he is gone it walks the same way back
+    (S, then the turns undone) to where the chase started, stopping each
+    stretch by the coordinates under the minimap."""
+
+    def __init__(self, inp: Input, instance: str, use_home: bool = False, mode: str = "spot") -> None:
+        self.inp = inp
+        self.instance = instance
+        # "spot": Mimics and the Gamekeeper at the spot (for the drop);
+        # "level": the taught mobs within range, one after another (for levels).
+        self.mode = mode
+        self.use_home = use_home  # off until reading the coordinates is reliable on every background
+        # Image px at 1080p per unit, learned from each turn made standing and
+        # kept per instance: every character turns at its own speed.
+        self.gain_file = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "parsec-multi", f"guard-{instance}.json")
+        saved = {}
+        try:
+            with open(self.gain_file) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            pass
+        self.gain = float(saved.get("gain", TURN_PX))
+        self.learned = "gain" in saved
+        # Far names (the Gamekeeper coming): the camera turns round the
+        # character, so they move far more per unit than names close by.
+        self.gain_far = float(saved.get("gain_far", FAR_GAIN))
+        self.far_learned = "gain_far" in saved
+        # Mouse units per radian of turning, for walking home. A first guess
+        # from the turn speed (about a 75 degree view across 1920 px); its
+        # sign and size are learned from the first turns.
+        self.upr = float(saved.get("upr", 16000.0))  # vm1: about -16000
+        self.upr_votes = int(saved.get("votes", 0))
+        self.calibrated = bool(saved.get("calibrated"))  # upr measured by --calibrate: steer by coordinates
+        self.upr_cal = float(saved.get("upr_cal", self.upr))  # as measured, before trimming
+        self.flipped = False  # the sign of upr was corrected on this walk home
+        self.paused_macro = False  # the macro was stopped by us for a walk home
+        self.pos = None  # (x, y) game coordinates, last trusted reading
+        self.pos_read = 0.0
+        self.pos_time = 0.0  # time of the last trusted reading
+        self.weak = []  # weak readings while no position is known yet
+        self.jumped = None  # (from, to) when the character was moved far, until handled
+        self.reads = [0, 0, 0.0]  # readings, trusted ones, time of the last report
+        self.odd = []  # readings that did not fit the last position
+        self.home = None
+        self.returning = None  # time the walk home started
+        self.range_back = False  # the walk home is only back into the range
+        self.hp_checked, self.hp_empty, self.dead = 0.0, None, False  # the HP bar: when looked at, empty since, dead
+        self.revive_to, self.revive_tried, self.revive_walk = None, 0.0, False  # where to walk back after reviving
+        saved_to = saved.get("revive_to")
+        if isinstance(saved_to, list) and len(saved_to) == 2:
+            self.revive_to = (int(saved_to[0]), int(saved_to[1]))  # died at work before this run
+        self.revive_logged = 0.0  # when "no Revive button yet" was last logged
+        self.revive_poked = 0.0  # when the game was last clicked into to show the window
+        self.revive_hold = None  # (spot, since): revived, healing in the camp before walking back
+        # A walk back cut short by a restart is not taken up again: started
+        # by the player, the guard leaves the character where it stands.
+        self.walk_to = None  # walking back to the spot after reviving
+        self.stuck_n, self.stuck_at, self.detour_until, self.flip_votes = 0, None, 0.0, 0  # rounding obstacles on a walk home (stuck_at: when)
+        self.resumed = False  # the macro was restarted by us after a walk home, not by the user
+        self.heading_from = None  # (x, y, time) the current heading is measured from
+        self.last_turn = None  # (units, heading before) of the last turn on the way home
+        self.pending = None  # (time sent, dx before, dy before, units) of a turn not seen yet
+        self.walking = None  # time W went down
+        self.target = None  # (kind, dx, dy) of the last target, px at 1080p
+        self.lost_since = None
+        self.macro_on = False
+        self.macro_checked = -10.0  # check at the first step
+        self.trail = None  # while after the Gamekeeper: ("turn", units) and ("walk", from, seconds)
+        self.walk_from = None
+        self.chase_from = None
+        self.chase_start = 0.0
+        self.keeper_seen = 0.0
+        self.back = None  # the trail being walked back, last step first
+        self.back_seg = None  # ("wait", until) or ("walk", to, seconds, started, nearest so far)
+        self.want_since = None  # since when no Mimic has been in front
+        self.stood_since = 0.0  # when the character last stopped by its target
+        self.nudges = 0  # steps forward taken while standing by the target
+        self.nudged = None  # (time, position) of the last such step, until judged
+        self.range = KEEPER_RANGE
+        self.at_target = None  # screen distance when walking into the target got nowhere: next to it
+        self.keeper_frames = 0  # frames running with the Gamekeeper's name in view
+        self.close_seen = 0.0  # when the target was last close by
+        self.walk_min = 1e9  # nearest the target came on this walk
+        self.pitched_at = 0.0  # when the camera was last tilted to look from above
+        self.turned_at = 0.0  # when the camera was last turned toward a target
+        self.target_t = 0.0  # when the target was last seen
+        self.target_v = (0.0, 0.0)  # its own motion on the screen, px at 1080p a second
+        self.turned_back = False  # faced about after losing a close target
+        self.fight_shots, self.fight_shot_at = 0, 0.0
+        self.mobs = []  # taught mobs (MOBS_FILE), reread when the file changes
+        self.mobs_mtime = -1.0
+        self.mob_seen = 0.0
+        self.scans = 0  # looks around made since the last wait
+        self.idle_wait = MIMIC_RESPAWN
+        self.anchor = None  # (x, y) where the macro was started: the spot the range is measured from
+        self.lost_in_row = 0
+        self.next_turn = 0.0
+        self.quiet_until = 0.0
+
+    def stop(self) -> None:
+        self.stood_since = time.time()
+        if self.walking is not None:
+            self.inp.key(KEY_W, False)
+            if self.trail is not None:
+                self.trail.append(("walk", self.walk_from, time.time() - self.walking))
+            self.walking = None
+
+    def start_back(self, why: str) -> None:
+        self.stop()
+        if self.calibrated and self.pos is not None and self.chase_from is not None:
+            # With the turn measured, steer by the coordinates: the game may
+            # have turned the character on its own during the fight.
+            self.home, self.returning, self.flipped, self.flip_votes = self.chase_from, time.time(), False, 0
+            self.trail = self.back = self.back_seg = None
+            self.pending = self.target = self.at_target = None
+            self.lost_in_row = 0
+            log("keeper-back", why=why, by="coordinates", pos=list(self.pos), to=list(self.chase_from))
+            return
+        # Stretches that went nowhere drop out, and the turns around them add
+        # up to one: no point turning back and forth on the spot.
+        trail, kept = self.trail, []
+        for i, s in enumerate(trail):
+            if s[0] == "walk":
+                end = next((t[1] for t in trail[i + 1 :] if t[0] == "walk"), self.pos)
+                if s[1] and end and math.hypot(end[0] - s[1][0], end[1] - s[1][1]) <= 1:
+                    continue
+            if s[0] == "turn" and kept and kept[-1][0] == "turn":
+                kept[-1] = ("turn", kept[-1][1] + s[1])
+            else:
+                kept.append(s)
+        self.back = [s for s in kept if s != ("turn", 0)]
+        self.trail = self.back_seg = None
+        self.pending = self.target = self.at_target = None
+        self.lost_in_row = 0
+        log("keeper-back", why=why, steps=len(self.back), pos=self.pos and list(self.pos), to=self.chase_from and list(self.chase_from))
+
+    def walk_back(self, now: float) -> None:
+        seg = self.back_seg
+        if seg is not None and seg[0] == "wait":
+            if now < seg[1]:
+                return
+            seg = self.back_seg = None
+        if seg is None:
+            if not self.back:
+                self.back = None
+                log("keeper-home", pos=self.pos and list(self.pos), home=self.chase_from and list(self.chase_from))
+                return
+            step = self.back.pop()
+            if step[0] == "turn":
+                self.inp.turn(-step[1], min(0.9, 0.25 + abs(step[1]) * self.gain / 1500))
+                self.back_seg = ("wait", now + 0.5)  # let the turn land before walking
+            else:
+                self.inp.key(KEY_S, True)
+                self.back_seg = ("walk", step[1], step[2], now, None)
+            log("back-step", step=step[0], arg=step[1] if step[0] == "turn" else step[1] and list(step[1]), pos=self.pos and list(self.pos))
+            return
+        _, to, secs, started, nearest = seg
+        done = now - started > max(3.0, 3 * secs)
+        if to is not None and self.pos is not None:
+            d = math.hypot(self.pos[0] - to[0], self.pos[1] - to[1])
+            done = done or d <= 1.5 or (nearest is not None and d > nearest + 2)  # there, or past it
+            nearest = d if nearest is None else min(nearest, d)
+        else:
+            done = done or now - started >= secs  # no position: back as long as it went
+        if done:
+            self.inp.key(KEY_S, False)
+            self.back_seg = ("wait", now + 0.3)
+        else:
+            self.back_seg = ("walk", to, secs, started, nearest)
+
+    def set_pitch(self, now: float) -> None:
+        """Hunting mobs: the camera looking down from above, horizon just out
+        of the picture. Only from above does a name's distance on the screen
+        say how far the mob is (with a flat camera names near and far sit at
+        one height). Down to the stop, then back a little: one smooth move."""
+        self.inp.pitch(PITCH_DOWN, 0.8)
+        self.inp.pitch(-PITCH_BACK, 0.4)
+        self.pitched_at = now
+        log("camera-pitch", down=PITCH_DOWN, back=PITCH_BACK)
+
+    def recapture(self) -> None:
+        """Parsec stops passing mouse turns to the game once its window loses
+        focus, until it sees a click. The click leaves the left button as it
+        was: the macro may be holding it."""
+        held = self.inp.button_held()
+        self.inp.button(not held)
+        time.sleep(0.06)
+        self.inp.button(held)
+        log("capture-click", held=held)
+
+    def load_mobs(self) -> None:
+        try:
+            mtime = os.path.getmtime(MOBS_FILE)
+        except OSError:
+            mtime = 0.0
+        if mtime == self.mobs_mtime:
+            return
+        self.mobs_mtime = mtime
+        self.mobs = load_mobs()
+        log("mobs", ids=[m["id"] for m in self.mobs])
+
+    def save(self) -> None:
+        with open(self.gain_file, "w") as f:
+            json.dump({"revive_to": self.revive_to and list(self.revive_to), "walk_to": self.walk_to and list(self.walk_to), "gain": round(self.gain, 3), "gain_far": round(self.gain_far, 3), "upr": round(self.upr, 1), "upr_cal": round(self.upr_cal, 1), "votes": max(-5, min(5, self.upr_votes)), "calibrated": self.calibrated}, f)
+
+    def resume_macro(self) -> None:
+        self.resumed = True
+        state = instance_state(self.instance)
+        if state.get("macroState") == "off" and state.get("macro") and state.get("display"):
+            subprocess.Popen(["setsid", "-f", "omarchy-macro", "play", state["macro"], "--display", state["display"]],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=CHILD_ENV)
+        self.macro_checked = time.time() + 3  # give it time to show as running
+
+    def update_position(self, rgb: np.ndarray, now: float) -> None:
+        """Trust a reading that fits the last position, or one that repeats."""
+        if now - self.pos_read < 0.4:
+            return
+        self.pos_read = now
+        r = read_coords(rgb)
+        self.reads[0] += 1
+        if now - self.reads[2] > 10:
+            log("pos", pos=self.pos and list(self.pos), reads=self.reads[0], trusted=self.reads[1], last=r and [r[0], r[1], round(r[2], 2)])
+            self.reads = [0, 0, now]
+        if r is None or r[2] < 0.5:
+            return
+        xy = (r[0], r[1])
+        # Plausible if the character could have walked there since the last
+        # trusted reading (about 5 m/s, and the stream lags under a second).
+        plausible = self.pos is not None and abs(xy[0] - self.pos[0]) + abs(xy[1] - self.pos[1]) <= 12 + 8 * (now - self.pos_time)
+        if r[2] < 0.85:
+            # A weak reading: the digits were learned off a slightly scaled
+            # picture, and a game shown 1:1 (fullscreen) matches them worse.
+            # Taken only as a plausible step on, or, with nothing to go on,
+            # once the same place has been read six times running.
+            if plausible:
+                self.reads[1] += 1
+                self.pos, self.odd, self.weak, self.pos_time = xy, [], [], now
+            elif self.pos is None:
+                self.weak = (self.weak + [xy])[-6:]
+                if len(self.weak) == 6 and len(set(self.weak)) == 1:
+                    self.pos, self.weak, self.pos_time = xy, [], now
+            return
+        self.reads[1] += 1
+        if self.pos is None or plausible:
+            self.pos, self.odd, self.weak, self.pos_time = xy, [], [], now
+            return
+        self.odd.append(xy)
+        if len(self.odd) >= 3 and max(abs(a[0] - xy[0]) + abs(a[1] - xy[1]) for a in self.odd[-3:]) <= 4:
+            # Three readings agree on a place the character could not have
+            # walked to: it was moved there. Far off, that is the respawn
+            # in the camp after a death.
+            if math.hypot(xy[0] - self.pos[0], xy[1] - self.pos[1]) > 100:
+                self.jumped = (self.pos, xy)
+            self.pos, self.odd, self.pos_time = xy, [], now
+        self.odd = self.odd[-3:]
+
+    def go_home(self, now: float) -> None:
+        """Walk back to home: learn which way the character faces from how
+        the coordinates change while it walks, turn toward home, repeat."""
+        (hx, hy), (x, y) = self.home, self.pos
+        if self.range_back and (math.hypot(hx - x, hy - y) <= 0.6 * self.range or now - self.returning > RETURN_MAX):
+            self.stop()
+            log("range-in", pos=[x, y], spot=[hx, hy])
+            self.returning = self.heading_from = self.last_turn = self.home = None
+            self.range_back = False
+            return
+        # Back from the camp, near the spot is enough (it is set anew where
+        # the macro starts): hitting it to the unit only circles round it.
+        ok = REVIVE_OK if self.revive_walk else HOME_OK
+        if math.hypot(hx - x, hy - y) <= ok or now - self.returning > (REVIVE_WALK_MAX if self.revive_walk else RETURN_MAX):
+            self.stop()
+            if math.hypot(hx - x, hy - y) <= ok:
+                log("home-reached", pos=[x, y], revived=self.revive_walk)
+            else:
+                log("home-gave-up", pos=[x, y], home=[hx, hy], revived=self.revive_walk)
+                if self.revive_walk:
+                    self.paused_macro = False  # not at the spot: the macro stays off, for the player
+            if self.revive_walk:
+                self.walk_to = None
+                self.save()
+            self.revive_walk = False
+            self.returning = self.heading_from = self.last_turn = None
+            if not self.use_home:
+                self.home = None  # a walk back from a chase, not the leash
+            if self.paused_macro:
+                self.paused_macro = False
+                self.resume_macro()
+            return
+        if self.walking is None:
+            self.inp.key(KEY_W, True)
+            self.walking = now
+            self.heading_from = (x, y, now)
+            return
+        fx, fy, ft = self.heading_from
+        # Coordinates are whole units: a heading needs a few of them, and
+        # right after a turn the character still swings round as it sets off.
+        if math.hypot(x - fx, y - fy) < (6 if self.last_turn is not None else 3):
+            if now - ft > 4.0:  # not getting anywhere: something in the way
+                # Round it: turn away, more each time it blocks again at the
+                # same place, and walk on a few seconds before aiming again.
+                # Along it: a quarter turn, always the same way, and a longer
+                # stretch along it each time it blocks again soon after.
+                self.stop()
+                if self.stuck_at is None or now - self.stuck_at > 25.0:
+                    self.stuck_n = 0
+                self.stuck_n = min(self.stuck_n + 1, 6)
+                self.stuck_at = now
+                self.inp.turn(round(self.upr * math.pi / 2), 0.7)
+                self.last_turn = None
+                self.detour_until = now + 2.0 + 2.0 * self.stuck_n
+                log("home-stuck", pos=[x, y], n=self.stuck_n)
+            return
+        if now < self.detour_until:
+            return  # walking on round the obstacle
+        heading = math.atan2(y - fy, x - fx)
+        if self.last_turn is not None and self.calibrated:
+            units, before, asked = self.last_turn
+            delta = wrap(heading - before)
+            # Calibration knows the size of a turn roughly, not which way the
+            # coordinates count it: a clear turn the wrong way says so, once.
+            # The size is trimmed a little by every turn that went the right
+            # way (half-steps, within a factor of three of the calibration).
+            if not self.flipped and math.radians(30) < abs(asked) < math.radians(135) and abs(delta) > 0.5 and (delta > 0) != (asked > 0):
+                # Twice running, so one heading spoilt by an obstacle cannot.
+                self.flip_votes += 1
+                if self.flip_votes >= 2:
+                    self.upr, self.flipped = -self.upr, True
+                    self.save()
+                    log("home-flip", upr=round(self.upr), asked=round(math.degrees(asked)), seen=round(math.degrees(delta)))
+            elif math.radians(30) <= abs(asked) <= math.radians(95) and math.radians(10) <= abs(delta) <= math.radians(170) and (delta > 0) == (asked > 0):
+                self.flip_votes = 0
+                trimmed = self.upr * math.sqrt(abs(asked / delta))
+                lo, hi = abs(self.upr_cal) / 3, abs(self.upr_cal) * 3
+                self.upr = math.copysign(min(max(abs(trimmed), lo), hi), self.upr)
+                self.save()
+            self.last_turn = None
+        if self.last_turn is not None and not self.calibrated:
+            units, before, asked = self.last_turn
+            delta = wrap(heading - before)
+            # Learn only from turns well short of half a circle: near 180
+            # degrees which way it went is anyone's guess.
+            if math.radians(30) < abs(asked) < math.radians(150) and abs(delta) > 0.3 and UPR_RANGE[0] < abs(units / delta) < UPR_RANGE[1]:
+                seen = units / delta
+                # Which way a unit turns is decided by a vote over the turns
+                # so far, so one bad heading cannot flip it; the size is the
+                # running geometric mean of the turns that agree.
+                self.upr_votes += 1 if seen > 0 else -1
+                sign = 1 if self.upr_votes > 0 else -1 if self.upr_votes < 0 else (1 if seen > 0 else -1)
+                if (seen > 0) == (sign > 0):
+                    size = math.sqrt(abs(self.upr * seen)) if (self.upr > 0) == (sign > 0) else abs(seen)
+                    self.upr = sign * size
+                else:
+                    self.upr = sign * abs(self.upr)
+                self.save()
+            self.last_turn = None
+        err = wrap(math.atan2(hy - y, hx - x) - heading)
+        if abs(err) > math.radians(25):
+            self.stop()
+            upr = self.upr if self.calibrated else math.copysign(min(max(abs(self.upr), UPR_RANGE[0]), UPR_RANGE[1]), self.upr)
+            # A quarter at most at a time: with the size of a turn only
+            # roughly known, a half turn asked for can come out as a whole.
+            err = math.copysign(min(abs(err), math.pi / 2), err)
+            units = round(err * upr)
+            self.inp.turn(units, min(0.9, 0.2 + abs(err) / 3))
+            self.last_turn = (units, heading, err)
+            log("home-turn", pos=[x, y], err=round(math.degrees(err)), units=units, upr=round(self.upr))
+        else:
+            self.heading_from = (x, y, now)
+
+    def learn_gain(self, moved: float, units: int, at: float, kind: str) -> None:
+        """A turn that showed: px the name moved per unit, kept for names far
+        or near (at: the name's distance when the turn was made)."""
+        measured = moved / units
+        if not 0.15 <= measured <= 3.5:
+            return
+        if at >= FAR_D:
+            # The Gamekeeper is one big target: his say counts for half.
+            self.gain_far = 0.5 * self.gain_far + 0.5 * measured if kind == "gamekeeper" else measured if not self.far_learned else 0.7 * self.gain_far + 0.3 * measured
+            self.far_learned = True
+        elif measured <= 2.5:
+            # Mobs move as well: one measurement only nudges it.
+            self.gain = measured if not self.learned else 0.8 * self.gain + 0.2 * measured
+            self.learned = True
+        else:
+            return
+        self.save()
+        log("turned", units=units, moved=round(moved), gain=round(self.gain, 2), gain_far=round(self.gain_far, 2), far=at >= FAR_D)
+
+    def try_revive(self, rgb: np.ndarray, now: float) -> None:
+        """Dead after working: click the death window's Revive button."""
+        if self.revive_to is None or now - self.revive_tried < 3.0:
+            return
+        self.revive_tried = now
+        hit = find_revive(rgb)
+        if hit is None:
+            # The game shows the window once it is clicked into (a click on
+            # the ground over the dead character, nothing there to hit).
+            if now - self.revive_poked >= 10.0:
+                self.revive_poked = now
+                h, w, _ = rgb.shape
+                gx, gy, gw, gh = game_rect(w, h)
+                self.inp.click(gx + gw // 2, gy + round(0.28 * gh))
+            if now - self.revive_logged >= 30.0:
+                self.revive_logged = now
+                log("revive-unseen", poked=True)
+            return
+        self.inp.click(hit[0], hit[1])
+        log("revive-click", at=[hit[0], hit[1]], score=round(hit[2], 2))
+
+    def check_alive(self, rgb: np.ndarray, now: float) -> bool:
+        """False while the character lies dead: its HP bar empty for two
+        seconds. Then nothing moves, and the macro is stopped (it would only
+        swing at the air); once there is HP again, on as before."""
+        if now - self.hp_checked >= 1.0:
+            self.hp_checked = now
+            hp = hp_fraction(rgb)
+            if hp is not None:
+                if hp < 0.01:
+                    self.hp_empty = self.hp_empty or now
+                else:
+                    self.hp_empty = None
+                    if not self.dead and self.revive_to is not None and self.revive_hold is None:
+                        # Alive and not by the bot's click (the player revived
+                        # it, or it was before a restart): nothing to walk back for.
+                        self.revive_to = None
+                        self.save()
+                        log("revive-cleared", hp=round(hp, 2))
+                    if self.dead:
+                        # Revived, most likely in the camp: that jump in the
+                        # coordinates is no news. Start afresh from wherever it is.
+                        self.dead = False
+                        self.pos, self.odd, self.weak, self.jumped = None, [], [], None
+                        self.anchor = self.home = self.chase_from = None
+                        log("alive", hp=round(hp, 2))
+                        if self.revive_to is not None and not self.calibrated:
+                            # Without a calibrated turn the walk back only
+                            # wanders: stay revived where it is, for the player.
+                            log("revive-stay", why="not calibrated")
+                        elif self.revive_to is not None:
+                            # Revived with little HP: heal in the camp first,
+                            # or the spot's mobs kill it again on arrival.
+                            self.revive_hold = (self.revive_to, now)
+                        self.revive_to = None
+                        self.save()
+        if not self.dead and self.hp_empty is not None and now - self.hp_empty >= 2.0:
+            self.dead = True
+            # Working when it died (the macro on, or the bot walking it with
+            # the macro off: back from the camp, after the Gamekeeper): revive
+            # and walk back to the spot after. Kept in the file, so a restart
+            # of the guard still knows.
+            if self.revive_walk and self.home is not None:
+                self.revive_to = self.home
+            elif self.macro_on or self.returning is not None or self.trail is not None or self.back is not None:
+                self.revive_to = self.chase_from or self.anchor or self.pos
+            else:
+                self.revive_to = None
+            self.revive_walk = False
+            self.save()
+            self.stop()
+            self.inp.key(KEY_S, False)
+            self.trail = self.back = self.back_seg = self.returning = self.target = self.pending = None
+            self.range_back = False
+            log("dead", pos=self.pos and list(self.pos), macro_stopped=self.macro_on)
+            if self.macro_on:
+                subprocess.run([PANEL, "macro-stop", self.instance], capture_output=True, env=CHILD_ENV)
+                self.macro_on = False
+                self.macro_checked = now
+        return not self.dead
+
+    def step(self, rgb: np.ndarray, keeper: list[dict]) -> None:
+        now = time.time()
+        if now - self.macro_checked > 5:
+            self.macro_checked = now
+            state = instance_state(self.instance)
+            on = state.get("macroState") == "running"
+            new_range = float(state.get("range", KEEPER_RANGE))
+            if new_range != self.range:
+                log("range", metres=new_range)
+            self.range = new_range
+            self.load_mobs()
+            if on != self.macro_on and self.returning is None:
+                log("follow", macro=on)
+                if on and not self.resumed:
+                    self.home = self.anchor = None  # the macro starts at the spot
+                if on:
+                    self.recapture()
+                self.resumed = False
+            if self.returning is None:
+                self.macro_on = on
+        if self.dead or (self.revive_to is not None and self.revive_hold is None and self.returning is None):
+            # Lying dead (the macro is off): wait for life, reviving if it
+            # died at work (also when that was before a restart of the guard).
+            if not self.check_alive(rgb, now):
+                self.try_revive(rgb, now)
+                return
+        if self.revive_hold is not None:
+            self.update_position(rgb, now)
+            spot, since = self.revive_hold
+            hp = hp_fraction(rgb) if now - self.hp_checked >= 1.0 else None
+            if hp is not None:
+                self.hp_checked = now
+            if (hp is not None and hp >= REVIVE_HP) or now - since > REVIVE_HOLD_MAX:
+                # Back to the spot by the coordinates, the macro off on the
+                # way (its held button stops the stride); on again once there.
+                self.revive_hold = None
+                self.home, self.returning, self.flipped, self.flip_votes = spot, now, False, 0
+                self.revive_walk, self.paused_macro = True, True
+                self.walk_to = spot
+                self.save()
+                log("revive-walk", to=list(spot), hp=None if hp is None else round(hp, 2), waited=round(now - since))
+            else:
+                return
+        if not self.macro_on and self.returning is None:
+            self.stop()
+            if self.back is not None or self.trail is not None:
+                self.inp.key(KEY_S, False)
+                self.back = self.back_seg = self.trail = None
+            return
+
+        self.update_position(rgb, now)
+        if not self.check_alive(rgb, now):
+            return
+        if self.jumped is not None:
+            # Dead and back in the camp: the macro would hit the air there
+            # and the bot would hunt from the wrong spot. Stop and wait for
+            # the macro to be started again at the spot.
+            frm, to = self.jumped
+            self.jumped = None
+            self.stop()
+            self.inp.key(KEY_S, False)
+            self.trail = self.back = self.back_seg = self.home = self.anchor = self.returning = self.target = None
+            log("moved-far", frm=list(frm), to=list(to), macro_stopped=self.macro_on)
+            if self.macro_on:
+                subprocess.run([PANEL, "macro-stop", self.instance], capture_output=True, env=CHILD_ENV)
+                self.macro_on = False
+                self.macro_checked = now
+            return
+        if self.anchor is None and self.pos is not None and self.macro_on:
+            self.anchor = self.pos
+            log("spot", pos=list(self.pos), range=self.range)
+            if self.mode == "level":
+                self.set_pitch(now)
+        if self.use_home and self.home is None and self.pos is not None:
+            self.home = self.pos
+            log("home", pos=list(self.home))
+        if self.home is not None and self.pos is not None:
+            if self.returning is None and math.hypot(self.pos[0] - self.home[0], self.pos[1] - self.home[1]) > LEASH:
+                self.stop()
+                self.returning = now
+                self.target = None
+                log("leash", pos=list(self.pos), home=list(self.home))
+                # The macro's held button stops the character mid-stride.
+                subprocess.run([PANEL, "macro-stop", self.instance], capture_output=True, env=CHILD_ENV)
+                self.paused_macro = True
+            if self.returning is not None:
+                self.go_home(now)
+                return
+
+        if self.trail is not None and self.chase_from is None and self.anchor is not None:
+            # The chase began before the first reading: it began at the spot,
+            # read a moment later where the character stood.
+            self.chase_from = self.anchor
+        if self.back is not None:
+            self.walk_back(now)
+            return
+        if self.trail is not None and now - self.chase_start > CHASE_MAX:
+            self.start_back("too-long")
+            return
+        if not keeper:
+            self.keeper_frames = 0
+        elif self.trail is None:
+            # Off after him at once, but not on a stray cyan glimpse: two
+            # frames running (about 0.15 s).
+            self.keeper_frames += 1
+            if self.keeper_frames < 2:
+                return
+        if keeper and self.mode == "spot":
+            self.keeper_seen = now
+            if self.trail is None:
+                self.stop()
+                self.trail, self.chase_from, self.chase_start = [], self.pos, now
+                self.target = self.at_target = self.pending = None
+                self.next_turn = 0.0  # no waiting out a turn toward a Mimic
+                self.lost_in_row = 0
+                log("keeper-chase", pos=self.pos and list(self.pos))
+        elif self.trail is not None:
+            # His name drops out of a frame now and then: walk on through that.
+            if now - self.keeper_seen > 0.8:
+                self.stop()
+            if now - self.keeper_seen > KEEPER_GONE:
+                self.start_back("gone")
+            return
+
+        per_px = 1080 / game_rect(rgb.shape[1], rgb.shape[0])[3]
+
+        def where(h: dict) -> tuple[float, float]:
+            return h["dx"] * per_px, h["dy"] * per_px
+
+        def dist(h: dict) -> float:
+            dx, dy = where(h)
+            return math.hypot(dx, dy - CHAR_DY)
+
+        def reach(h: dict) -> float:
+            return h.get("near", NEAR)
+
+        # Not farther from the spot than the panel's range: at the edge it
+        # stands and lets the mobs come (range 0: it only turns).
+        out = self.range <= 0 or (self.anchor is not None and self.pos is not None
+                                  and math.hypot(self.pos[0] - self.anchor[0], self.pos[1] - self.anchor[1]) >= self.range)
+        if out and self.walking is not None:
+            self.stop()
+            log("range-edge", range=self.range, pos=self.pos and list(self.pos))
+        if self.mode == "level":
+            seen = [("mob", h) for h in detect(rgb, "mob", self.mobs)]
+            if seen:
+                self.mob_seen = now
+            elif self.target and self.target[0] == "mob" and now - self.mob_seen < 1.0:
+                return  # the name dropped out of a frame: carry on
+            cands = [c for c in seen if dist(c[1]) <= reach(c[1]) + 40] if out else seen  # at the edge: only what it can hit from here
+            if out and self.range > 0 and not cands and self.calibrated and self.returning is None and self.anchor is not None and self.pos is not None:
+                # Past the edge with nothing to hit: back toward the spot by
+                # the coordinates, well into the range, then look again.
+                self.stop()
+                self.home, self.returning, self.flipped, self.range_back = self.anchor, now, False, True
+                self.target = None
+                log("range-back", pos=list(self.pos), spot=list(self.anchor))
+                return
+        else:
+            cands = [("gamekeeper", h) for h in keeper] or [("mimic", h) for h in detect(rgb, "mimic")]
+        if not cands:
+            if self.mode == "level" and not self.turned_back and now - self.close_seen < 2.0 and self.pending is None:
+                # It was right by the character and is gone from view: the
+                # character ran past it (or it past the character). Face about
+                # once, smoothly, instead of waiting and looking all round.
+                self.stop()
+                units = round(abs(self.upr) * math.pi) if self.calibrated else round(0.8 * 1920 / self.gain)
+                self.inp.turn(units, 0.6)
+                self.turned_back = True
+                self.next_turn = now + 1.5
+                log("turn-back", units=units)
+                return
+            self.lost_since = self.lost_since or now
+            if now - self.lost_since > 0.6:
+                self.stop()
+                self.target = None
+            if now - self.lost_since > 1.5 and self.quiet_until < self.lost_since:
+                self.quiet_until = now + MIMIC_RESPAWN
+                self.scans = 0
+                self.idle_wait = MIMIC_RESPAWN
+                log("none-in-view", wait=MIMIC_RESPAWN)
+            # Still nothing in view: look around, most of a screen at a time,
+            # then wait, longer each time. At the spot the Mimics come by
+            # themselves: keep the camera still.
+            if self.mode == "level" and self.quiet_until >= self.lost_since and now >= self.quiet_until and now >= self.next_turn \
+                    and self.pending is None and self.walking is None:
+                if self.scans == 0 and now - self.pitched_at > PITCH_EVERY:
+                    self.set_pitch(now)  # looking round: from above again, if it was moved
+                if self.scans < SCAN_STEPS:
+                    # A quarter turn: by the calibration where there is one,
+                    # else about a third of a screen (the gain is learned near
+                    # the middle and overstates the turn far out).
+                    units = round(abs(self.upr) * math.pi / 2) if self.calibrated else round(0.35 * 1920 / self.gain)
+                    self.inp.turn(units, 0.6)
+                    self.scans += 1
+                    self.next_turn = now + 3.0
+                    log("look-around", step=self.scans, units=units)
+                else:
+                    self.idle_wait = min(60.0, 2 * self.idle_wait)
+                    self.quiet_until = now + self.idle_wait
+                    self.scans = 0
+                    log("idle", wait=self.idle_wait)
+            return
+        self.lost_since = None
+        self.turned_back = False
+
+        def rank(h: dict) -> float:
+            # Nearest first: the name nearest the character's own (the camera
+            # looks down on the ground round the character).
+            return dist(h)
+
+        if self.pending is not None and not self.pending[5] and now <= self.pending[6]:
+            return  # a turn round a close mob is on its way: the picture is about to change
+        kind, hit = min(cands, key=lambda c: rank(c[1]))
+        # Stay on the previous target while it is still there (where the last
+        # turn will have put it): names jiggle, and with many mobs about,
+        # another is always about as near; hopping between them, the camera
+        # turns to and fro and the character never sets off.
+        same = False
+        if self.target and self.target[0] == kind:
+            # Mobs walk about: look for it where it was heading, too.
+            dt = min(now - self.target_t, 1.0)
+            ex, ey = self.target[1] + self.target_v[0] * dt, self.target[2] + self.target_v[1] * dt
+            k2, h2 = min(cands, key=lambda c: math.hypot(where(c[1])[0] - ex, where(c[1])[1] - ey))
+            if math.hypot(where(h2)[0] - ex, where(h2)[1] - ey) < 120 and rank(h2) <= rank(hit) + 250:
+                hit, same = h2, True
+            elif kind != "mimic":
+                log("retarget", mob=hit.get("mob"), dx=round(where(hit)[0]), dist=round(dist(hit)))
+                if self.pending is not None and kind == "mob":
+                    self.pending = self.pending[:5] + (False,) + self.pending[6:]  # says nothing of the gain
+        dx, dy = where(hit)
+        d = dist(hit)
+        near = reach(hit)
+        if self.target is None or self.target[0] != kind:
+            log("target", kind=kind, mob=hit.get("mob"), dx=round(dx), dist=round(d))
+            self.nudges, self.nudged = 0, None
+        # Its own motion on the screen: what it moved beyond where the last
+        # turn put it. Walking moves every name too, so only measured standing.
+        if same and self.walking is None and 0.05 < now - self.target_t < 1.0:
+            dt = now - self.target_t
+            mx, my = (dx - self.target[1]) / dt, (dy - self.target[2]) / dt
+            vx, vy = 0.6 * self.target_v[0] + 0.4 * mx, 0.6 * self.target_v[1] + 0.4 * my
+            n = math.hypot(vx, vy)
+            self.target_v = (vx * min(1, 400 / n), vy * min(1, 400 / n)) if n else (0.0, 0.0)
+        elif not same:
+            self.target_v = (0.0, 0.0)
+        self.target, self.target_t = (kind, dx, dy), now
+        if self.at_target is not None and (kind == "mimic" or d > self.at_target + 150):
+            self.at_target = None  # it moved off: after it again
+
+        if self.pending is not None:
+            sent, before, before_dy, units, expect, far, shown, at = self.pending
+            moved = before - dx
+            if not far:
+                # A turn round a close mob: wait until it shows, then look anew.
+                if now > shown:
+                    self.pending = None
+                    self.lost_in_row = 0
+            elif abs(dy - before_dy) > 40:
+                self.pending = None  # another mob: says nothing about the turn
+            elif now - sent < 0.3:
+                pass  # the stream shows a turn a quarter second late at best: what moved so far is the target itself
+            elif abs(moved) >= 0.3 * expect:
+                # Walking moves the name too: learn only from turns made
+                # standing, at a far target (close by, the camera turning round
+                # the character moves a name far less).
+                # The Gamekeeper is one big target: a turn at him tells the
+                # far gain well enough even on the run, and at once.
+                if far and (self.walking is None or kind == "gamekeeper"):
+                    self.learn_gain(moved, units, at, kind)
+                self.pending = None
+                self.lost_in_row = 0
+            elif now - sent > TURN_TIMEOUT and far and moved * units > 0 and abs(moved) >= 15:
+                # It did turn, only less than the gain said: the gain was off.
+                if self.walking is None or kind == "gamekeeper":
+                    self.learn_gain(moved, units, at, kind)
+                self.pending = None
+                self.lost_in_row = 0
+            elif now - sent > TURN_TIMEOUT:
+                log("turn-lost", units=units)
+                self.pending = None
+                if self.trail and self.trail[-1] == ("turn", units):
+                    self.trail.pop()  # never reached the game: nothing to undo
+                self.lost_in_row += 1
+                if self.lost_in_row == 1:
+                    self.recapture()
+                elif kind != "mimic" and d < near + CLOSE_EXTRA:
+                    # Turned and clicked, still no move: the mob is right by
+                    # the character, where turning the camera barely moves it.
+                    self.next_turn = now + 5
+                else:
+                    self.next_turn = now + 1
+        in_front = kind == "mimic" and any(abs(where(h)[0]) <= HIT_DX and dist(h) <= HIT_DIST for _, h in cands)
+        if in_front or abs(dx) <= AIM_OK:
+            self.want_since = None
+        elif self.want_since is None:
+            self.want_since = now
+        close = kind != "mimic" and d < near + CLOSE_EXTRA
+        # Close by, the angle the mob stands at round the character: a name
+        # over the character is ahead, beside it at the side, under it behind
+        # (where it shows hardly aside at all, yet needs a half turn).
+        bearing = math.atan2(dx, REF_Y - dy) if close and kind == "mob" else None
+        if close:
+            self.close_seen = now
+            if self.mode == "level" and self.fight_shots < FIGHT_SHOTS and now - self.fight_shot_at > 3.0:
+                # Pictures of the fights, to learn the damage numbers from
+                # (white or yellow over the mob, red over the character).
+                self.fight_shot_at, self.fight_shots = now, self.fight_shots + 1
+                folder = os.path.join(os.path.dirname(self.gain_file), f"fights-{self.instance}")
+                os.makedirs(folder, exist_ok=True)
+                write_png(os.path.join(folder, time.strftime("%H%M%S") + f"-{self.fight_shots:02d}.png"), rgb)
+        # The way back from the Gamekeeper retraces straight stretches unless
+        # the turn is calibrated: then no turning while walking.
+        retrace = self.trail is not None and not self.calibrated
+        if kind == "mimic":
+            ready = self.want_since is not None and now - self.want_since >= MIMIC_REACT and now >= self.next_turn and now >= self.quiet_until
+        else:
+            # Keep it centred, walking too; close by its name sways as it
+            # moves, so only a clear drift is followed.
+            ready = now >= self.next_turn and (abs(bearing) > FRONT if bearing is not None else abs(dx) > AIM_OK) and (self.walking is None or not retrace)
+        keeper = kind == "gamekeeper"
+        if self.pending is None and (abs(dx) > AIM_OK or bearing is not None) and not in_front and ready:
+            # A little short of the name, as a hand would: the next look
+            # corrects it. The Gamekeeper kills if he is left to come: straight
+            # at him, and fast.
+            # Where it will be once the turn shows (the stream lags about half a second).
+            lead = dx + (self.target_v[0] * 0.5 if kind != "mimic" else 0.0)
+            if bearing is not None:
+                # Right by the character the camera turns round it, and a
+                # name barely moves: a mob at its side shows only some 130 px
+                # aside. Turn by the angle it stands at instead.
+                angle = math.atan2(lead, REF_Y - dy)
+                units = round(0.85 * angle * (abs(self.upr) if self.calibrated else UNITS_RAD))
+                expect, far = 0.0, False
+                spread = min(0.8, 0.25 + abs(angle) / math.pi)
+            else:
+                distant = d >= FAR_D
+                g, known = (self.gain_far, self.far_learned) if distant else (self.gain, self.learned)
+                units = round(lead / g * ((1.0 if keeper else 0.7 if self.walking is not None else 0.85) if known else 0.6))
+                expect, far = abs(units) * g, True
+                spread = min(0.25, 0.1 + abs(units) * g / 4000) if keeper else min(0.7, 0.2 + abs(units) * g / 1500)
+            if units:
+                if bearing is not None:
+                    self.stop()  # a turn round a close mob: standing
+                self.inp.turn(units, spread)
+                self.turned_at = time.time()
+                self.walk_min = 1e9
+                self.pending = (time.time(), dx, dy, units, expect, far, time.time() + spread + 0.8, d)
+                self.target = (kind, dx - math.copysign(expect, units), dy)  # where the turn puts it
+                self.next_turn = time.time() + (TURN_REST if kind == "mimic" else 0.15 if keeper else 0.3)
+                if retrace:
+                    self.trail.append(("turn", units))
+        if kind == "mimic":
+            self.stop()
+            return
+
+        # Start only clearly too far, stop once close: names jiggle around near.
+        # Walk only once a turn has landed; walking on, the turns keep it ahead
+        # (retracing: stop to turn when it drifts aside).
+        # A turn sent lands in the game at once, only the stream shows it late:
+        # for the Gamekeeper walk off on where the turn will put him.
+        aim = dx
+        if keeper and self.pending is not None and self.walking is None:
+            aim = self.pending[1] - math.copysign(self.pending[4], self.pending[3])
+        ahead = abs(aim) <= (WALK_AIM if self.walking is None else WALK_AIM + 60 if retrace else 60 if close else 250)
+        if bearing is not None:
+            ahead = abs(bearing) <= FRONT + (0.0 if self.walking is None else math.radians(10))
+        # Only a reading taken well into the walk says it got nowhere: the
+        # stream lags and, on a busy machine, a step can take a second.
+        if self.walking is not None and self.walk_from and self.pos and now - self.walking > 2.0 \
+                and self.pos_time > self.walking + 1.2 \
+                and math.hypot(self.pos[0] - self.walk_from[0], self.pos[1] - self.walk_from[1]) <= 1:
+            # Its body is in the way (the Gamekeeper's name floats high over
+            # a big body, so on screen he looks farther than he is).
+            self.stop()
+            if kind == "gamekeeper" or d <= near + 60:
+                self.at_target = d
+                log("reached", kind=kind, dist=round(d), pos=list(self.pos))
+            else:
+                # Mobs do not block the way: far from it, that was a rock or
+                # a late reading. Stop and look again.
+                log("blocked", kind=kind, dist=round(d), pos=list(self.pos))
+        if self.at_target is not None or out:
+            return
+        if self.walking is not None:
+            self.walk_min = min(self.walk_min, d)
+            # (Not just after a turn: that moves the name as well.)
+            if same and self.pending is None and now - self.turned_at > 1.0 and self.walk_min < near + 60 and d > self.walk_min + 40:
+                # It was right there and is falling behind: walked past it
+                # (mobs do not block the way). Stop; the next look turns back.
+                self.stop()
+                log("passed", kind=kind, dist=round(d), nearest=round(self.walk_min))
+                return
+        if (d > near + 15 or (self.walking is not None and d > near)) and ahead and (self.walking is not None or self.pending is None or keeper):
+            if self.walking is None:
+                self.inp.key(KEY_W, True)
+                self.walking = now
+                self.walk_from = self.pos
+                self.walk_min = d
+                self.nudges = 0
+                log("walk", kind=kind, dist=round(d), pos=self.pos and list(self.pos))
+            elif now - self.walking > (0.7 if close else WALK_MAX):
+                self.stop()  # close: a short step and a look; far: looked long enough the same way
+        elif self.walking is not None:
+            self.stop()
+            log("stop", kind=kind, dist=round(d))
+        elif d <= near + 40 and (abs(bearing) <= FRONT if bearing is not None else abs(dx) <= 60) and self.pending is None:
+            # Standing by it. Still there after a few seconds: the stop may
+            # have come a step short, so a step forward, until the body blocks.
+            if self.nudged is not None:
+                since, from_ = self.nudged
+                if now - since > 1.2 and self.pos and self.pos_time > since + 0.8:
+                    if from_ and math.hypot(self.pos[0] - from_[0], self.pos[1] - from_[1]) <= 1:
+                        self.at_target = d
+                        log("reached", kind=kind, dist=round(d), pos=list(self.pos), how="nudge")
+                    self.nudged = None
+            elif now - self.stood_since > 4.0 and self.nudges < 3:
+                self.inp.key(KEY_W, True)
+                time.sleep(0.35)
+                self.inp.key(KEY_W, False)
+                self.nudges += 1
+                self.nudged = (now, self.pos)
+                self.stood_since = now
+                log("nudge", kind=kind, dist=round(d), n=self.nudges)
+
+
+def calibrate(screen: Screen, instance: str) -> int:
+    """Measure the mouse units of one full camera turn, standing still: turn
+    in slow steps and find where the picture matches the start again. Which
+    way a turn goes in the coordinates is learned on the first walk home.
+    Then a test: walk off for two seconds and come back by the coordinates.
+    Needs the macro off and the character standing in the open."""
+    inp = Input(screen)
+    fol = Follower(inp, instance)
+    fol.recapture()
+    time.sleep(0.5)
+
+    def band() -> np.ndarray:
+        rgb = screen.grab()
+        sh, sw, _ = rgb.shape
+        gx, gy, gw, gh = game_rect(sw, sh)
+        b = rgb[gy + int(0.12 * gh) : gy + int(0.45 * gh), gx + int(0.05 * gw) : gx + int(0.85 * gw)].astype(np.float32).mean(axis=2)[::2, ::2]
+        b -= b.mean()
+        return b * np.outer(np.hanning(b.shape[0]), np.hanning(b.shape[1])).astype(np.float32)
+
+    def match(a: np.ndarray, b: np.ndarray) -> tuple[float, int]:
+        r = np.fft.fft2(a) * np.conj(np.fft.fft2(b))
+        r /= np.abs(r) + 1e-9
+        c = np.abs(np.fft.ifft2(r))
+        k = int(c.argmax())
+        dx = k % c.shape[1]
+        dx = dx - c.shape[1] if dx > c.shape[1] // 2 else dx
+        return float(c.max() / (c.mean() + 1e-9)), dx
+
+    def settle(prev: np.ndarray) -> np.ndarray:
+        end = time.time() + 1.5
+        cur = band()
+        while time.time() < end and float(np.abs(cur - prev).mean()) < 1e-3:
+            time.sleep(0.05)
+            cur = band()
+        time.sleep(0.3)
+        return band()
+
+    home = position(fol, screen)
+    if home is None:
+        log("calibrate-failed", reason="no coordinates under the minimap")
+        inp.release()
+        return 1
+    log("calibrate-start", pos=list(home))
+    ref = band()
+    step, total, scores = 250, 0, []
+    prev = ref
+    while total < 12000:
+        inp.turn(step, 0.2)  # slowly: the game may cap how fast the camera turns
+        total += step
+        prev = settle(prev)
+        scores.append(match(ref, prev)[0])
+    full = turn_period(scores, step)
+    log("calibrate-turn", units_per_turn=full, scores=[round(v) for v in scores])
+    inp.turn(-total, 1.5)  # back to facing where it started
+    if not full:
+        log("calibrate-failed", reason="the picture never came back round")
+        inp.release()
+        return 1
+    was = (fol.upr, fol.upr_cal, fol.calibrated)
+    fol.upr = fol.upr_cal = math.copysign(full / (2 * math.pi), fol.upr)  # the sign as known so far; the walk home corrects it
+    fol.upr_votes = 0
+    fol.calibrated = True
+    fol.save()
+    log("calibrate", upr=round(fol.upr), units_per_turn=full)
+    time.sleep(1.0)
+    rc = home_test(screen, fol, home)
+    if rc:
+        # Not to be trusted: keep what the instance had before.
+        fol.upr, fol.upr_cal, fol.calibrated = was
+        fol.save()
+        log("calibrate-failed", reason="the walk home did not come back", kept=round(fol.upr), calibrated=fol.calibrated)
+    return rc
+
+
+def turn_period(scores: list[float], step: int) -> int:
+    """Mouse units of a full turn from how well the picture matched the
+    start after every step: it comes back round at every full turn, so the
+    matches peak at the period and its multiples (weakly, with the mobs
+    moving about). The median spacing of the peaks; one peak is taken alone."""
+    sm = [sum(scores[max(i - 1, 0) : i + 2]) / len(scores[max(i - 1, 0) : i + 2]) for i in range(len(scores))]
+    peaks = [i for i in range(2, len(sm) - 2) if sm[i] >= 25 and sm[i] >= max(sm[i - 2 : i + 3])]
+    kept = []
+    for i in peaks:
+        if not kept or i - kept[-1] >= 6:
+            kept.append(i)
+    if not kept:
+        return 0
+    if len(kept) == 1:
+        return (kept[0] + 1) * step
+    gaps = sorted((b - a) * step for a, b in zip(kept, kept[1:]))
+    return gaps[len(gaps) // 2]
+
+
+def position(fol: "Follower", screen: Screen) -> tuple[int, int] | None:
+    fol.pos_read = 0.0
+    fol.update_position(screen.grab(), time.time())
+    return fol.pos
+
+
+def home_test(screen: Screen, fol: "Follower", home: tuple[int, int]) -> int:
+    """Walk off for two seconds, then back to home by the coordinates, with
+    the macro off: the test of a calibrated turn."""
+    inp = fol.inp
+    inp.key(KEY_W, True)
+    time.sleep(2.0)
+    inp.key(KEY_W, False)
+    time.sleep(0.8)
+    away = position(fol, screen)
+    fol.home, fol.returning, fol.macro_on, fol.flipped = home, time.time(), True, False
+    fol.resume_macro = lambda: None  # the macro is off on purpose; leave it off
+    turns = 0
+    while fol.returning is not None:
+        fol.update_position(screen.grab(), time.time())
+        if fol.pos:
+            before = fol.last_turn
+            fol.go_home(time.time())
+            turns += fol.last_turn is not None and fol.last_turn is not before
+        time.sleep(0.15)
+    inp.release()
+    time.sleep(0.8)
+    end = position(fol, screen)
+    off = math.hypot(end[0] - home[0], end[1] - home[1]) if end else None
+    log("home-test", away=away and list(away), back=end and list(end), home=list(home), off=off and round(off, 1), turns=turns, upr=round(fol.upr))
+    return 0 if off is not None and off <= 3 else 1
+
+def main() -> int:
+    argv = sys.argv[1:]
+    argv_flags = set(argv)
+    opts = {}
+    args = []
+    while argv:
+        a = argv.pop(0)
+        if a in ("--interval", "--snapshots", "--image", "--hunt", "--calibrate", "--home-test", "--teach", "--mode"):
+            opts[a] = argv.pop(0)
+        else:
+            args.append(a)
+
+    if "--image" in opts:
+        rgb = read_ppm(opts["--image"])
+        t = time.perf_counter()
+        hits = detect(rgb)
+        print(json.dumps({"image": opts["--image"], "ms": round((time.perf_counter() - t) * 1000), "hits": hits}))
+        out = os.path.splitext(opts["--image"])[0] + "-guard.png"
+        write_png(out, mark(rgb, hits))
+        print(f"marked: {out}")
+        return 0
+
+    if len(args) != 1:
+        print(__doc__.split("\n\n")[-2], file=sys.stderr)
+        return 2
+    display = args[0]
+    if "--calibrate" in opts:
+        return calibrate(Screen(display), opts["--calibrate"])
+    if "--home-test" in opts:
+        screen = Screen(display)
+        fol = Follower(Input(screen), opts["--home-test"])
+        fol.recapture()
+        time.sleep(0.5)
+        home = position(fol, screen)
+        if home is None:
+            log("home-test", result="no coordinates under the minimap")
+            return 1
+        return home_test(screen, fol, home)
+    if "--teach" in opts:
+        return teach(Screen(display), opts["--teach"])
+    interval = float(opts.get("--interval", "0.5"))
+    snaps = opts.get("--snapshots") or os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "parsec-multi", f"guard{display.replace(':', '-')}")
+    os.makedirs(snaps, exist_ok=True)
+    screen = Screen(display)
+    instance = opts.get("--hunt")
+    mode = opts.get("--mode", "spot")
+    if mode not in ("spot", "level"):
+        print("--mode must be spot or level", file=sys.stderr)
+        return 2
+    follower = Follower(Input(screen), instance, use_home="--home" in argv_flags, mode=mode) if instance else None
+    if follower:
+        interval = min(interval, 0.15)
+
+        def quit_(*_: object) -> None:
+            follower.inp.release()  # never leave W held down
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, quit_)
+        signal.signal(signal.SIGINT, quit_)
+    last_seen = 0.0
+    last_snap = 0.0
+    print(json.dumps({"event": "start", "display": display, "size": screen.size(), "snapshots": snaps, "hunt": instance, "mode": mode if instance else None}), flush=True)
+    while True:
+        t = time.time()
+        try:
+            rgb = screen.grab()
+        except OSError as e:
+            print(json.dumps({"event": "error", "error": str(e)}), flush=True)
+            time.sleep(interval)
+            continue
+        hits = detect(rgb) if mode == "spot" else []
+        if follower:
+            follower.step(rgb, hits)
+        if hits:
+            if t - last_seen > 5:
+                print(json.dumps({"event": "seen", "time": time.strftime("%H:%M:%S"), "hits": hits}), flush=True)
+            if t - last_snap > 10:
+                path = os.path.join(snaps, time.strftime("%Y%m%d-%H%M%S") + ".png")
+                write_png(path, mark(rgb, hits))
+                print(json.dumps({"event": "snapshot", "path": path}), flush=True)
+                last_snap = t
+            last_seen = t
+        elif last_seen and t - last_seen > 5 and last_seen > last_snap - 10:
+            print(json.dumps({"event": "gone", "time": time.strftime("%H:%M:%S")}), flush=True)
+            last_seen = 0.0
+        time.sleep(max(0.0, interval - (time.time() - t)))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

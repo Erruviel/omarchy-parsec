@@ -121,6 +121,97 @@ An instance without one gets the macro pinned to its window
 (`omarchy-macro play <macro> --window address:...`), which only runs while that
 window has focus and pauses when it loses it.
 
+## Gamekeeper hunt
+
+**Gamekeeper** in the panel (instances with their own X server) turns
+`bin/parsec-guard --hunt <name> :N` on and off for that instance; while on,
+the button shows when it last saw the mob. It watches the instance's X server
+for the Gamekeeper (the mob with a blue name over its head) and logs every
+sighting to `~/.cache/parsec-multi/guard-<name>.log`, with snapshots in
+`~/.cache/parsec-multi/guard-N/`.
+
+While the instance's macro runs, it also points the character at targets for
+the macro to hit, turning the camera with XTEST mouse motion in the
+background (smoothly, and as rarely as it can). It has two modes, one guard
+per instance:
+
+- **Gamekeeper** (spot mode, for the drop). Mimics (yellow names) come to the
+  character, so it never walks after them: it turns toward the nearest one
+  only when none is in front of it, and keeps still for the 10 s they take
+  to respawn. The Gamekeeper it runs to: turns until the name is over the
+  crosshair, walks with W while he is far and stops once it walks into him
+  (the coordinates stop changing). Once he is gone, it walks the same way
+  back with S (backwards, facing the same way), undoing each turn, and stops
+  each stretch by the coordinates under the minimap (keep the minimap in the
+  top right corner; without them it walks back by time).
+- **Mobs** (level mode, for levels). It hunts the mobs you taught it, one
+  after another: runs to the nearest, stands there while the macro hits,
+  and once the name is gone takes the next; when nothing is in view it
+  waits, then looks around (most of a screen at a time), then waits longer.
+  Mimics and the Gamekeeper are ignored. It stays where the last fight was.
+
+**Teach** on an instance learns the mob its character is looking at: stand
+by the mob within weapon reach, aim at it, click. The guard stores the
+name's colour, width and text shape, and the name's distance on screen as
+the reach it stops at, in `~/.config/parsec-multi/mobs.json` with a
+thumbnail (and the whole picture) in `mobs/`; the panel lists them with a
+Forget button (`parsec-panel mob-teach <name>` / `mob-remove <id>`). Mobs
+are told apart by the exact name, level prefix included, so teach each
+level you want hunted. Where the ground has the name's colour (sand under
+an orange name) only pixels brighter than their surround count, and the
+character's own body under the crosshair is skipped; check the thumbnail,
+and Forget and teach again if it shows the wrong thing. Taught mobs are
+shared by all instances. Close to a mob the guard walks in short steps
+with a look between them, keeps the name centred, and if it stands by a
+mob that does not go down it steps forward (up to three times) until the
+body blocks.
+
+When the character dies (its red HP bar, over the blue MP bar, empty for
+two seconds) the guard stops the macro and logs `dead`. If the macro was
+running (or the guard was walking the character: after the Gamekeeper,
+back from the camp), it clicks into the game every 10 s until the death
+window shows, clicks its **Revive** button (`revive-click`), and once the
+character lives again (`alive`, usually in the camp) waits there for 90%
+HP (at most 90 s), walks back to within 4 units of the spot by the
+coordinates with the macro off (`revive-walk`), then starts the macro
+there (`home-reached`). The spot to walk back to is kept in
+`guard-<name>.json`, so a restart of the guard still revives (a walk back
+cut short by a restart is not taken up again); a character found alive
+without that (revived by hand) clears it (`revive-cleared`). The walk
+needs a calibrated instance: an uncalibrated one only revives and stays
+with the macro off (`revive-stay`), as does one that does not get there
+in three minutes. On the way, an obstacle is rounded by a quarter turn and
+a longer stretch along it each time it blocks again (`home-stuck`).
+
+When the character is moved far in one go without a death seen (the
+coordinates jump by more than 100 m), the guard stops the macro, logs
+`moved-far` and waits for the macro to be started again at the spot.
+
+**Calibration** (`parsec-guard --calibrate <name> :N`, macro off, the
+character standing in the open) turns the camera slowly through about
+three full turns and takes the mouse units of one turn from where the
+picture matches the start again (the matches peak at every full turn;
+about 3300-3500 on main), then walks off for two seconds and back by the
+coordinates (`--home-test <name> :N` runs that walk alone); which way a
+turn counts in the coordinates is learned on that first walk back. A
+calibrated instance (`calibrated` in `~/.cache/parsec-multi/guard-<name>.json`)
+walks back from the Gamekeeper by the coordinates instead of retracing.
+
+In either mode the character never runs farther than the instance's **Run
+range** slider in the panel (metres from where the macro was started,
+`parsec-panel set <name> range=N`, default 15; 0 only turns; read live): at
+the edge it stands and lets the mobs come. Parsec passes mouse turns to the
+game only after a click since its window last had focus, so a turn that
+does not show gets a click first, one that leaves the left button as the
+macro holds it. Instances run their X server with `-hidpi` so that the
+coordinates are legible.
+
+Detection is colour thresholding (cyan hue, text-shaped cluster, dark ground
+around it, a name as wide as "Gamekeeper": other mobs with blue names are
+narrower) with the chat box, minimap (top right) and quest tracker left out. `parsec-guard --image shot.ppm` runs it on a
+screenshot. Needs numpy: `sudo pacman -S python-numpy`, or run it as
+`uv run --script bin/parsec-guard :N`.
+
 ## Hyprland config
 
 `~/.config/hypr/hyprland.lua`:

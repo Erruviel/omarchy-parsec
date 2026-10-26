@@ -20,6 +20,11 @@
   "row.macroRunning": "%1 działa",
   "row.macroWaiting": "%1 czeka na fokus",
   "row.macroMissing": "brak makra %1",
+  "action.guard": "Gamekeeper",
+  "action.guardTip": "Tryb spot (drop): gdy działa makro, obraca kamerę na Mimiki poza zasięgiem broni, biegnie do Gamekeepera (najdalej na ustawiony zasięg) i wraca na miejsce; bije makro",
+  "row.range": "Zasięg biegu",
+  "row.rangeValue": "%1 m",
+  "action.guardSeen": "Gamekeeper %1",
   "row.display": "własny serwer X %1",
   "action.add": "Dodaj",
   "action.editInstance": "Edytuj tę instancję",
@@ -44,5 +49,13 @@
   "editor.remove": "Usuń",
   "editor.removeBlocked": "Najpierw zatrzymaj instancję",
   "editor.cancel": "Anuluj",
-  "editor.save": "Zapisz"
+  "editor.save": "Zapisz",
+  "action.level": "Moby",
+  "action.levelTip": "Tryb poziomu: gdy działa makro, biega od moba do moba z listy nauczonych w ustawionym zasięgu od spotu i bije je makrem; Mimiki i Gamekeepera pomija",
+  "action.teach": "Naucz",
+  "action.teachTip": "Stań przy mobie na zasięg broni, wyceluj w niego i kliknij: bot zapamięta jego nazwę (kolor i kształt) oraz odległość",
+  "mobs.title": "Nauczone moby",
+  "mobs.detail": "nazwa %1 px · zasięg %2 · %3",
+  "mobs.empty": "Brak nauczonych mobów. Stań przy mobie na zasięg broni, wyceluj w niego i kliknij Naucz przy instancji.",
+  "mobs.remove": "Zapomnij"
 }

@@ -36,6 +36,7 @@ Panel {
   // for an existing one, "" when closed.
   property string editing: ""
   readonly property var macros: info.macros || []
+  readonly property var mobs: info.mobs || []
   function entryFor(name) {
     for (var i = 0; i < instances.length; i++) if (instances[i].name === name) return instances[i]
     return ({})
@@ -105,6 +106,32 @@ Panel {
   function toggleMacro(inst) {
     if (busyName !== "") return
     runAction(["macro-toggle", inst.name], inst.name)
+  }
+
+  // parsec-guard on the instance's own X server: "spot" keeps the character
+  // on the Mimics and the Gamekeeper where it stands, "level" hunts the
+  // taught mobs within range. One per instance: starting one stops the other.
+  function toggleGuard(inst, mode) {
+    if (busyName !== "") return
+    runAction(["guard-toggle", inst.name, mode], inst.name)
+  }
+
+  // parsec-guard learns the mob the instance's character is looking at.
+  function teachMob(inst) {
+    if (busyName !== "") return
+    runAction(["mob-teach", inst.name], inst.name)
+  }
+
+  function removeMob(id) {
+    if (busyName !== "") return
+    runAction(["mob-remove", id], id)
+  }
+
+  // How far (metres) parsec-guard may run after the Gamekeeper; it reads the
+  // value every few seconds, so no restart.
+  function setRange(inst, metres) {
+    if (busyName !== "") return
+    runAction(["set", inst.name, "range=" + Math.round(metres)], inst.name)
   }
 
   function editList() {
@@ -281,6 +308,41 @@ Panel {
             }
           }
 
+          PanelSeparator {
+            visible: root.instances.length > 0
+            foreground: root.barForeground
+          }
+
+          Text {
+            visible: root.instances.length > 0
+            width: parent.width
+            textFormat: Text.PlainText
+            text: strings.t("mobs.title")
+            color: root.barForeground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Repeater {
+            model: root.mobs
+            MobRow {
+              required property var modelData
+              width: parent.width
+              mob: modelData
+            }
+          }
+
+          Text {
+            visible: root.instances.length > 0 && root.mobs.length === 0
+            width: parent.width
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            text: strings.t("mobs.empty")
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
           Text {
             visible: root.instances.length === 0
             width: parent.width
@@ -304,6 +366,86 @@ Panel {
           }
         }
       }
+    }
+  }
+
+  // One taught mob: thumbnail (the name over the mob) · facts · forget.
+  component MobRow: Item {
+    id: mobRow
+    property var mob: ({})
+    readonly property var colour: mob.colour || [200, 200, 200]
+
+    implicitHeight: Math.max(thumb.height, facts.implicitHeight, forget.implicitHeight) + Style.space(4)
+    opacity: root.busyName === String(mob.id) ? 0.5 : 1
+
+    Image {
+      id: thumb
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      // The whole picture: the name at its top, the mob under it.
+      width: Style.space(84)
+      height: Style.space(72)
+      fillMode: Image.PreserveAspectFit
+      source: mob.thumb ? "file://" + mob.thumb : ""
+      cache: false
+    }
+
+    Rectangle {
+      id: swatch
+      anchors.left: thumb.right
+      anchors.leftMargin: Style.space(10)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(10)
+      height: width
+      radius: width / 2
+      color: Qt.rgba(mobRow.colour[0] / 255, mobRow.colour[1] / 255, mobRow.colour[2] / 255, 1)
+    }
+
+    Column {
+      id: facts
+      anchors.left: swatch.right
+      anchors.leftMargin: Style.space(8)
+      anchors.right: forget.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: 0
+
+      Text {
+        width: parent.width
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        text: String(mobRow.mob.id || "")
+        color: root.barForeground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      Text {
+        width: parent.width
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        text: strings.t("mobs.detail")
+          .arg(Commons.I18n.formatNumber(Math.round(Number(mobRow.mob.width || 0))))
+          .arg(Commons.I18n.formatNumber(Math.round(Number(mobRow.mob.near || 0))))
+          .arg(String(mobRow.mob.taught || ""))
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    Button {
+      id: forget
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      iconText: "󰆴"
+      text: strings.t("mobs.remove")
+      fontSize: Style.font.caption
+      bordered: true
+      enabled: root.busyName === ""
+      foreground: root.dim
+      fontFamily: root.fontFamily
+      onClicked: root.removeMob(String(mobRow.mob.id))
     }
   }
 
@@ -331,8 +473,14 @@ Panel {
     readonly property string macroState: String(inst.macroState || "")
     readonly property bool macroOn: macroState === "running" || macroState === "waiting"
     readonly property bool hasMacro: running && macroState !== "" && macroState !== "missing"
+    readonly property string guardMode: String(inst.guardMode || "")
 
-    implicitHeight: Math.max(nameCol.implicitHeight, actions.implicitHeight) + Style.space(4)
+    // The name line with its buttons on top; below it the bot's buttons on a
+    // line of their own and the range slider across the full width (the
+    // name line has no room for either).
+    readonly property real topHeight: Math.max(nameCol.implicitHeight, actions.implicitHeight) + Style.space(4)
+    readonly property real botHeight: botRow.visible ? botRow.implicitHeight + Style.space(4) : 0
+    implicitHeight: topHeight + botHeight + (rangeRow.visible ? rangeRow.implicitHeight + Style.space(4) : 0)
     opacity: rowBusy ? 0.5 : 1
 
     Rectangle {
@@ -341,7 +489,7 @@ Panel {
       height: width
       radius: width / 2
       anchors.left: parent.left
-      anchors.verticalCenter: parent.verticalCenter
+      y: (row.topHeight - height) / 2
       color: row.connected ? root.barForeground : "transparent"
       border.width: row.connected ? 0 : 1
       border.color: row.running ? root.barForeground : root.faint
@@ -353,7 +501,7 @@ Panel {
       anchors.leftMargin: Style.space(10)
       anchors.right: actions.left
       anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
+      y: (row.topHeight - height) / 2
       spacing: 0
 
       Text {
@@ -378,9 +526,103 @@ Panel {
     }
 
     Row {
+      id: botRow
+      visible: row.running && row.inst.nested === true
+      anchors.right: parent.right
+      y: row.topHeight
+      spacing: Style.space(4)
+
+      Button {
+        visible: row.running && row.inst.nested === true
+        iconText: "󰈈"
+        // The detail line is cut off on a crowded row; the last sighting goes
+        // on the button instead.
+        text: row.guardMode === "spot" && row.inst.guardSeen ? strings.t("action.guardSeen").arg(String(row.inst.guardSeen)) : strings.t("action.guard")
+        tooltipText: strings.t("action.guardTip")
+        fontSize: Style.font.caption
+        bordered: true
+        active: row.guardMode === "spot"
+        enabled: !row.rowBusy && root.busyName === ""
+        foreground: root.barForeground
+        fontFamily: root.fontFamily
+        onClicked: root.toggleGuard(row.inst, "spot")
+      }
+
+      Button {
+        visible: row.running && row.inst.nested === true
+        iconText: "󰓥"
+        text: strings.t("action.level")
+        tooltipText: strings.t("action.levelTip")
+        fontSize: Style.font.caption
+        bordered: true
+        active: row.guardMode === "level"
+        enabled: !row.rowBusy && root.busyName === ""
+        foreground: root.barForeground
+        fontFamily: root.fontFamily
+        onClicked: root.toggleGuard(row.inst, "level")
+      }
+
+      Button {
+        visible: row.running && row.inst.nested === true
+        iconText: "󰆣"
+        text: strings.t("action.teach")
+        tooltipText: strings.t("action.teachTip")
+        fontSize: Style.font.caption
+        bordered: true
+        enabled: !row.rowBusy && root.busyName === ""
+        foreground: root.barForeground
+        fontFamily: root.fontFamily
+        onClicked: root.teachMob(row.inst)
+      }
+    }
+
+    Row {
+      id: rangeRow
+      visible: !!row.inst.display
+      anchors.left: nameCol.left
+      anchors.right: parent.right
+      y: row.topHeight + row.botHeight
+      spacing: Style.space(6)
+
+      Text {
+        id: rangeLabel
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: strings.t("row.range")
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      PanelSlider {
+        id: rangeSlider
+        bar: root.bar
+        anchors.verticalCenter: parent.verticalCenter
+        width: Math.max(Style.space(60), parent.width - rangeLabel.width - rangeValue.width - 2 * parent.spacing)
+        minimum: 0
+        maximum: 40
+        step: 1
+        integer: true
+        value: Number(row.inst.range !== undefined ? row.inst.range : 15)
+        enabled: root.busyName === ""
+        onReleased: function (v) { root.setRange(row.inst, v) }
+      }
+
+      Text {
+        id: rangeValue
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: strings.t("row.rangeValue").arg(Commons.I18n.formatNumber(Math.round(rangeSlider.liveValue)))
+        color: root.barForeground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    Row {
       id: actions
       anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
+      y: (row.topHeight - height) / 2
       spacing: Style.space(4)
 
       Button {
