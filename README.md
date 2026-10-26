@@ -43,6 +43,15 @@ move it with `omarchy bar move erruviel.parsec --section centerEnd`.
 
 Then add the Hyprland rules and keys from [Hyprland config](#hyprland-config).
 
+On a new machine, `bin/parsec-setup` does all of it in one go: the packages,
+this plugin, omarchy-macro and the personal settings (macros, instances,
+taught mobs, turn calibration) from a private `<owner>/omarchy-parsec-config`
+repo, which `parsec-setup save` fills from the machine that has them:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Erruviel/omarchy-parsec/main/bin/parsec-setup)
+```
+
 ## Instances
 
 The list lives in `~/.config/parsec-multi/instances.json` and the panel's

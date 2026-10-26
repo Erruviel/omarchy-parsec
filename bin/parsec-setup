@@ -1,0 +1,135 @@
+#!/bin/bash
+# Everything for omarchy-parsec on a new Omarchy machine, in one go:
+#
+#   bash <(curl -fsSL https://raw.githubusercontent.com/Erruviel/omarchy-parsec/main/bin/parsec-setup)
+#
+# installs the packages, this plugin, omarchy-macro, and the personal settings
+# kept in a private GitHub repo (OWNER/omarchy-parsec-config): the macros, the
+# instance list, the taught mobs and the guard's turn calibration. Safe to run
+# again; files it replaces are kept as *.~N~ backups.
+#
+#   parsec-setup save
+#
+# copies this machine's settings into that private repo (created on first use)
+# and pushes them, for the next machine to take.
+set -euo pipefail
+
+OWNER=${PARSEC_SETUP_OWNER:-Erruviel}
+SETTINGS=$OWNER/omarchy-parsec-config
+CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}
+PLUGIN_DIR=$CONFIG/omarchy/plugins/erruviel.parsec
+MACRO_SRC=$HOME/Projects/omarchy-macro
+WORK=$CACHE/parsec-setup
+
+say() { printf ':: %s\n' "$*"; }
+
+need_gh() {
+  command -v gh >/dev/null || omarchy pkg add github-cli
+  gh auth status >/dev/null 2>&1 || gh auth login --git-protocol https --web
+  gh auth setup-git >/dev/null  # git clones the private repos with gh's login
+}
+
+clone_or_pull() { # owner/repo dir
+  if [[ -d $2/.git ]]; then
+    git -C "$2" pull --ff-only --quiet
+  else
+    [[ -e $2 ]] && mv "$2" "$2.bak-$(date +%s)"
+    mkdir -p "$(dirname "$2")"
+    git clone --quiet "https://github.com/$1.git" "$2"
+  fi
+}
+
+enable_widget() { # plugin id
+  jq -e --arg id "$1" '[.bar.layout[]?[]? | select(.id == $id)] | length > 0' \
+    "$CONFIG/omarchy/shell.json" >/dev/null 2>&1 && return
+  omarchy plugin enable "$1" --section right ||
+    echo "   warning: could not enable it, run: omarchy plugin enable $1"
+}
+
+save() {
+  need_gh
+  gh repo view "$SETTINGS" >/dev/null 2>&1 ||
+    gh repo create "$SETTINGS" --private --description "Personal settings for omarchy-parsec (parsec-setup)" >/dev/null
+  rm -rf "$WORK/settings"
+  git clone --quiet "https://github.com/$SETTINGS.git" "$WORK/settings"
+  local s=$WORK/settings
+  rm -rf "$s/macros" "$s/parsec-multi" "$s/guard"
+  mkdir -p "$s/macros" "$s/parsec-multi/mobs" "$s/guard"
+  cp "$CONFIG"/omarchy/macros/*.json "$s/macros/" 2>/dev/null || true
+  for f in instances.json mobs.json; do
+    [[ -f $CONFIG/parsec-multi/$f ]] && cp "$CONFIG/parsec-multi/$f" "$s/parsec-multi/"
+  done
+  # Thumbnails only: the full frames a mob was taught from are not needed.
+  find "$CONFIG/parsec-multi/mobs" -maxdepth 1 -name '*.png' ! -name '*-frame.png' -exec cp {} "$s/parsec-multi/mobs/" \; 2>/dev/null || true
+  # Calibration, without a walk back pending on this machine.
+  for f in "$CACHE"/parsec-multi/guard-*.json; do
+    [[ -f $f ]] && jq '.revive_to = null | .walk_to = null' "$f" >"$s/guard/$(basename "$f")"
+  done
+  git -C "$s" add -A
+  if git -C "$s" diff --cached --quiet; then
+    say "settings unchanged"
+    return
+  fi
+  local login id
+  login=$(gh api user --jq .login)
+  id=$(gh api user --jq .id)
+  git -C "$s" -c user.name="$login" -c user.email="$id+$login@users.noreply.github.com" \
+    commit --quiet -m "settings from $(hostname) $(date '+%Y-%m-%d %H:%M')"
+  git -C "$s" push --quiet origin HEAD:main
+  say "settings saved to https://github.com/$SETTINGS"
+}
+
+install_all() {
+  [[ $EUID -ne 0 ]] || { echo "Run this as your normal user, not as root." >&2; exit 1; }
+
+  say "packages"
+  local pkgs=(git jq bubblewrap xorg-xwayland libxtst libxfixes python-numpy github-cli)
+  omarchy pkg missing "${pkgs[@]}" && omarchy pkg add "${pkgs[@]}"
+  omarchy pkg missing parsec-bin && omarchy pkg aur add parsec-bin
+
+  need_gh
+
+  say "omarchy-parsec into $PLUGIN_DIR"
+  clone_or_pull "$OWNER/omarchy-parsec" "$PLUGIN_DIR"
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$PLUGIN_DIR/bin/parsec-multi" "$HOME/.local/bin/parsec-multi"
+  ln -sfn "$PLUGIN_DIR/bin/parsec-setup" "$HOME/.local/bin/parsec-setup"
+
+  say "omarchy-macro"
+  clone_or_pull "$OWNER/omarchy-macro" "$MACRO_SRC"
+  bash "$MACRO_SRC/install.sh" | grep -E '^(::|   )' || true
+
+  say "settings from $SETTINGS"
+  if clone_or_pull "$SETTINGS" "$WORK/settings" 2>/dev/null; then
+    local s=$WORK/settings
+    mkdir -p "$CONFIG/omarchy/macros" "$CONFIG/parsec-multi/mobs" "$CACHE/parsec-multi"
+    cp --backup=numbered "$s"/macros/*.json "$CONFIG/omarchy/macros/" 2>/dev/null || true
+    cp --backup=numbered "$s"/parsec-multi/*.json "$CONFIG/parsec-multi/" 2>/dev/null || true
+    cp "$s"/parsec-multi/mobs/*.png "$CONFIG/parsec-multi/mobs/" 2>/dev/null || true
+    cp --backup=numbered "$s"/guard/*.json "$CACHE/parsec-multi/" 2>/dev/null || true
+    # Thumbnails are kept with a full path: point them at this home.
+    local mobs=$CONFIG/parsec-multi/mobs.json
+    if [[ -f $mobs ]]; then
+      jq --arg d "$CONFIG/parsec-multi/mobs" 'map(if .thumb then .thumb = ($d + "/" + (.thumb | split("/") | last)) else . end)' "$mobs" >"$mobs.tmp" && mv "$mobs.tmp" "$mobs"
+    fi
+  else
+    echo "   no settings repo yet: run 'parsec-setup save' on the machine that has them"
+  fi
+
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  enable_widget erruviel.parsec
+
+  cat <<'DONE'
+
+Done. Each Parsec instance asks for its login once, on its first launch.
+If the macros do not play, add yourself to the input group and log back in:
+  sudo usermod -aG input $USER
+DONE
+}
+
+case ${1:-install} in
+  install) install_all ;;
+  save) save ;;
+  *) echo "usage: parsec-setup [install|save]" >&2; exit 2 ;;
+esac
