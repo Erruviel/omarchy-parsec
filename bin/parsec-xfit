@@ -178,11 +178,12 @@ def warp_in_place(dpy) -> None:
 
 XT = ctypes.CDLL(ctypes.util.find_library("Xtst"))
 XT.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+XT.XTestFakeRelativeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
 
 
 def anchor_pointer(dpy, center: bool = False) -> None:
-    """An XTEST motion before a macro starts: to the pointer's own position,
-    or with center to the middle of the screen.
+    """An XTEST motion before a macro starts: a pixel off the pointer's own
+    position and back, or with center to the middle of the screen.
 
     Once the real mouse has left the Xwayland window, the next time the
     server re-traces the pointer (a resize, a warp) it puts it over the root
@@ -203,7 +204,14 @@ def anchor_pointer(dpy, center: bool = False) -> None:
     wy = ctypes.c_int()
     mask = ctypes.c_uint()
     if X.XQueryPointer(dpy, root, ctypes.byref(r), ctypes.byref(child), ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx), ctypes.byref(wy), ctypes.byref(mask)):
-        XT.XTestFakeMotionEvent(dpy, -1, rx.value, ry.value, 0)
+        # A pixel aside and back: to the very same spot the server moves nothing
+        # and traces nothing, and the pointer stays over the root window.
+        # Relative, and sideways: an absolute move goes to Parsec as a jump of
+        # the mouse, which tilts the game's camera.
+        step = 1 if rx.value == 0 else -1
+        XT.XTestFakeRelativeMotionEvent(dpy, step, 0, 0)
+        X.XSync(dpy, 0)
+        XT.XTestFakeRelativeMotionEvent(dpy, -step, 0, 0)
         X.XSync(dpy, 0)
 
 

@@ -33,8 +33,11 @@ fi
 # Parsec restarting itself (it does, on client updates). -hidpi gives the
 # server the monitor's real pixels instead of the scaled-down logical size,
 # so the stream is not shrunk: small text (the minimap coordinates that
-# parsec-guard reads) stays legible.
-Xwayland "$display" -geometry "${PARSEC_NESTED_GEOMETRY:-1600x1000}" -noreset -hidpi >>"$log" 2>&1 &
+# parsec-guard reads) stays legible. -host-grab keeps the mouse inside the
+# focused window: out of it the game gets no more of it and the character
+# stops. It holds the compositor's shortcuts too (Ctrl+Shift lets go, and
+# back); binds with dont_inhibit still work.
+Xwayland "$display" -geometry "${PARSEC_NESTED_GEOMETRY:-1600x1000}" -noreset -hidpi -host-grab >>"$log" 2>&1 &
 xw=$!
 for _ in $(seq 50); do
   [[ -S /tmp/.X11-unix/X$num ]] && break

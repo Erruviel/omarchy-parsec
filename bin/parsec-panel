@@ -106,7 +106,7 @@ status() {
   local wins='[]'
   # A nested instance shows up as its Xwayland window ("Xwayland on :N"),
   # matched by display rather than by pid.
-  wins=$(hyprctl -j clients 2>/dev/null | jq -c '[.[] | select(.class == "parsecd" or (.class == "org.freedesktop.Xwayland" and (.title | test("^Xwayland on :[0-9]+$")))) | {pid, address, ws: .workspace.id, title, display: (if .class == "parsecd" then "" else (.title | ltrimstr("Xwayland on ")) end)}]' 2>/dev/null || echo '[]')
+  wins=$(hyprctl -j clients 2>/dev/null | jq -c '[.[] | select(.class == "parsecd" or (.class == "org.freedesktop.Xwayland" and (.title | test("^Xwayland on :[0-9]+")))) | {pid, address, ws: .workspace.id, title, display: (if .class == "parsecd" then "" else (.title | capture("^Xwayland on (?<d>:[0-9]+)").d) end)}]' 2>/dev/null || echo '[]')
 
   # Macro players, one read for all instances: slot is the window address
   # without its 0x prefix.
@@ -344,7 +344,7 @@ parsec_windows() {
     fi
     [[ $pid =~ ^[0-9]+$ ]] || continue
     addr_of[$(instance_of_pid "$pid")]=$addr
-  done < <(hyprctl -j clients 2>/dev/null | jq -r '.[] | select(.class == "parsecd" or .focusHistoryID == 0 or (.class == "org.freedesktop.Xwayland" and (.title | test("^Xwayland on :[0-9]+$")))) | "\(if .class == "parsecd" then .pid else "-" end) \(.address) \(.focusHistoryID) \(if .class == "org.freedesktop.Xwayland" then (.title | ltrimstr("Xwayland on ")) else "-" end)"')
+  done < <(hyprctl -j clients 2>/dev/null | jq -r '.[] | select(.class == "parsecd" or .focusHistoryID == 0 or (.class == "org.freedesktop.Xwayland" and (.title | test("^Xwayland on :[0-9]+")))) | "\(if .class == "parsecd" then .pid else "-" end) \(.address) \(.focusHistoryID) \(if .class == "org.freedesktop.Xwayland" then (.title | capture("^Xwayland on (?<d>:[0-9]+)").d) else "-" end)"')
   for n in "${!nested_of[@]}"; do addr_of[$n]=${nested_of[$n]}; done
   echo "@focused $active"
   for n in $order; do
@@ -451,10 +451,7 @@ resolve_name() {
 # player, and only the focused one drives anything (omarchy-macro handles
 # pausing the others and letting their buttons go).
 macro_start() {
-  local n e macro addr disp center=--center
-  # Pause ("active") starts it where the mouse aims; from the panel the mouse
-  # is on the bar, so the instance's pointer goes to the middle of its screen.
-  [[ $1 == active ]] && center=
+  local n e macro addr disp
   n=$(resolve_name "$1") || exit 1
   valid_name "$n" || exit 1
   e=$(entry "$n") || e='{}'
@@ -464,7 +461,8 @@ macro_start() {
   if [[ -n $disp ]]; then
     # The macro clicks where the instance's pointer is; make sure that is over
     # Parsec and not the root window (see parsec-xfit, anchor_pointer).
-    python3 "$(dirname "${BASH_SOURCE[0]}")/parsec-xfit" --anchor $center "$disp" 2>/dev/null || true
+    # In place: a pointer moved here would turn the game's camera.
+    python3 "$(dirname "${BASH_SOURCE[0]}")/parsec-xfit" --anchor "$disp" 2>/dev/null || true
     setsid -f omarchy-macro play "$macro" --display "$disp" >/dev/null 2>&1 </dev/null
     return
   fi
