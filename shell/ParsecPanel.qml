@@ -134,6 +134,12 @@ Panel {
     runAction(["set", inst.name, "range=" + Math.round(metres)], inst.name)
   }
 
+  // Read by parsec-guard every few seconds, so no restart.
+  function toggleSound(inst) {
+    if (busyName !== "") return
+    runAction(["set", inst.name, "sound=" + (inst.sound === false ? "1" : "0")], inst.name)
+  }
+
   function editList() {
     root.close()
     Quickshell.execDetached([root.panelScript, "edit"])
@@ -475,12 +481,10 @@ Panel {
     readonly property bool hasMacro: running && macroState !== "" && macroState !== "missing"
     readonly property string guardMode: String(inst.guardMode || "")
 
-    // The name line with its buttons on top; below it the bot's buttons on a
-    // line of their own and the range slider across the full width (the
-    // name line has no room for either).
+    // The name line with all its buttons, icons only (what each does is in its
+    // tooltip); below it the range slider across the full width.
     readonly property real topHeight: Math.max(nameCol.implicitHeight, actions.implicitHeight) + Style.space(4)
-    readonly property real botHeight: botRow.visible ? botRow.implicitHeight + Style.space(4) : 0
-    implicitHeight: topHeight + botHeight + (rangeRow.visible ? rangeRow.implicitHeight + Style.space(4) : 0)
+    implicitHeight: topHeight + (rangeRow.visible ? rangeRow.implicitHeight + Style.space(4) : 0)
     opacity: rowBusy ? 0.5 : 1
 
     Rectangle {
@@ -526,62 +530,11 @@ Panel {
     }
 
     Row {
-      id: botRow
-      visible: row.running && row.inst.nested === true
-      anchors.right: parent.right
-      y: row.topHeight
-      spacing: Style.space(4)
-
-      Button {
-        visible: row.running && row.inst.nested === true
-        iconText: "󰈈"
-        // The detail line is cut off on a crowded row; the last sighting goes
-        // on the button instead.
-        text: row.guardMode === "spot" && row.inst.guardSeen ? strings.t("action.guardSeen").arg(String(row.inst.guardSeen)) : strings.t("action.guard")
-        tooltipText: strings.t("action.guardTip")
-        fontSize: Style.font.caption
-        bordered: true
-        active: row.guardMode === "spot"
-        enabled: !row.rowBusy && root.busyName === ""
-        foreground: root.barForeground
-        fontFamily: root.fontFamily
-        onClicked: root.toggleGuard(row.inst, "spot")
-      }
-
-      Button {
-        visible: row.running && row.inst.nested === true
-        iconText: "󰓥"
-        text: strings.t("action.level")
-        tooltipText: strings.t("action.levelTip")
-        fontSize: Style.font.caption
-        bordered: true
-        active: row.guardMode === "level"
-        enabled: !row.rowBusy && root.busyName === ""
-        foreground: root.barForeground
-        fontFamily: root.fontFamily
-        onClicked: root.toggleGuard(row.inst, "level")
-      }
-
-      Button {
-        visible: row.running && row.inst.nested === true
-        iconText: "󰆣"
-        text: strings.t("action.teach")
-        tooltipText: strings.t("action.teachTip")
-        fontSize: Style.font.caption
-        bordered: true
-        enabled: !row.rowBusy && root.busyName === ""
-        foreground: root.barForeground
-        fontFamily: root.fontFamily
-        onClicked: root.teachMob(row.inst)
-      }
-    }
-
-    Row {
       id: rangeRow
       visible: !!row.inst.display
       anchors.left: nameCol.left
       anchors.right: parent.right
-      y: row.topHeight + row.botHeight
+      y: row.topHeight
       spacing: Style.space(6)
 
       Text {
@@ -637,9 +590,62 @@ Panel {
       }
 
       Button {
+        visible: row.running && row.inst.nested === true
+        iconText: "󰈈"
+        // The detail line is cut off on a crowded row; the last sighting goes
+        // here instead.
+        tooltipText: row.guardMode === "spot" && row.inst.guardSeen ? strings.t("action.guardSeen").arg(String(row.inst.guardSeen)) : strings.t("action.guardTip")
+        fontSize: Style.font.caption
+        bordered: true
+        active: row.guardMode === "spot"
+        enabled: !row.rowBusy && root.busyName === ""
+        foreground: root.barForeground
+        fontFamily: root.fontFamily
+        onClicked: root.toggleGuard(row.inst, "spot")
+      }
+
+      Button {
+        visible: row.running && row.inst.nested === true
+        iconText: "󰓥"
+        tooltipText: strings.t("action.levelTip")
+        fontSize: Style.font.caption
+        bordered: true
+        active: row.guardMode === "level"
+        enabled: !row.rowBusy && root.busyName === ""
+        foreground: root.barForeground
+        fontFamily: root.fontFamily
+        onClicked: root.toggleGuard(row.inst, "level")
+      }
+
+      Button {
+        visible: row.running && row.inst.nested === true
+        iconText: "󰆣"
+        tooltipText: strings.t("action.teachTip")
+        fontSize: Style.font.caption
+        bordered: true
+        enabled: !row.rowBusy && root.busyName === ""
+        foreground: root.barForeground
+        fontFamily: root.fontFamily
+        onClicked: root.teachMob(row.inst)
+      }
+
+      Button {
+        visible: row.running && row.inst.nested === true
+        iconText: row.inst.sound === false ? "󰖁" : "󰕾"
+        tooltipText: row.inst.sound === false ? strings.t("action.soundOff") : strings.t("action.soundOn")
+        fontSize: Style.font.caption
+        bordered: true
+        active: row.inst.sound !== false
+        enabled: !row.rowBusy && root.busyName === ""
+        foreground: root.barForeground
+        fontFamily: root.fontFamily
+        onClicked: root.toggleSound(row.inst)
+      }
+
+      Button {
         visible: row.hasMacro
-        iconText: row.macroOn ? "󰓛" : "󰌌"
-        text: row.macroOn ? strings.t("action.macroStop") : strings.t("action.macro")
+        iconText: "󰌌"
+        tooltipText: row.macroOn ? strings.t("action.macroStop") : strings.t("action.macro")
         fontSize: Style.font.caption
         bordered: true
         active: row.macroOn
@@ -652,7 +658,7 @@ Panel {
       Button {
         visible: row.running
         iconText: "󰍹"
-        text: strings.t("action.show")
+        tooltipText: strings.t("action.show")
         fontSize: Style.font.caption
         bordered: true
         enabled: !row.rowBusy && root.busyName === ""
@@ -676,7 +682,7 @@ Panel {
       Button {
         visible: !row.running
         iconText: "󰐊"
-        text: row.inst.peer_id ? strings.t("action.connect") : strings.t("action.launch")
+        tooltipText: row.inst.peer_id ? strings.t("action.connect") : strings.t("action.launch")
         fontSize: Style.font.caption
         bordered: true
         enabled: root.hasBwrap && !row.rowBusy && root.busyName === ""

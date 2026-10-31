@@ -1369,6 +1369,7 @@ class Follower:
         self.macro_checked = -10.0  # check at the first step
         self.polled = None  # the instance's state, once the background check has it
         self.range = KEEPER_RANGE
+        self.sound = True  # the alarm at death (a button in the panel)
         self.mobs = []  # taught mobs (MOBS_FILE), reread when the file changes
         self.mobs_mtime = -1.0
         self.per_px = 1.0  # px at 1080p per screen px
@@ -1759,7 +1760,8 @@ class Follower:
             self.returning = self.lock = self.sweep = None
             self.fight_on(now)
             log("dead", pos=self.pos and list(self.pos), macro_stopped=self.macro_on)
-            death_sound()
+            if self.sound:
+                death_sound()
             # What killed it: the picture says more than the log (the chat names him).
             folder = os.path.join(os.path.dirname(self.state_file), f"deaths-{self.instance}")
             os.makedirs(folder, exist_ok=True)
@@ -2308,6 +2310,7 @@ class Follower:
             if new_range != self.range:
                 log("range", metres=new_range)
             self.range = new_range
+            self.sound = state.get("sound") is not False
             self.load_mobs()
             if on != self.macro_on and self.returning is None:
                 log("follow", macro=on)

@@ -57,5 +57,7 @@
   "mobs.title": "Nauczone moby",
   "mobs.detail": "nazwa %1 px · zasięg %2 · %3",
   "mobs.empty": "Brak nauczonych mobów. Stań przy mobie na zasięg broni, wyceluj w niego i kliknij Naucz przy instancji.",
-  "mobs.remove": "Zapomnij"
+  "mobs.remove": "Zapomnij",
+  "action.soundOn": "Dźwięk przy śmierci: włączony",
+  "action.soundOff": "Dźwięk przy śmierci: wyłączony"
 }

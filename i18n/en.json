@@ -57,5 +57,7 @@
   "mobs.title": "Taught mobs",
   "mobs.detail": "name %1 px · reach %2 · %3",
   "mobs.empty": "No taught mobs yet. Stand by a mob within weapon reach, aim at it and click Teach on the instance.",
-  "mobs.remove": "Forget"
+  "mobs.remove": "Forget",
+  "action.soundOn": "Sound at death: on",
+  "action.soundOff": "Sound at death: off"
 }

@@ -166,6 +166,7 @@ status() {
           guardMode: (if $disp != "" then ($guards[$disp] // "") else "" end),
           guardSeen: (if $disp != "" and ($guards[$disp] // "") == "spot" then $seen else "" end),
           range: ($e.range // 15),
+          sound: ($e.sound != false),
           loggedIn: ($loggedin == "1"),
           running: ($pid != ""),
           pid: ($pid | if . == "" then null else tonumber end),
@@ -218,6 +219,7 @@ patch_from_args() {
       macro)     [[ -z $val || $val =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "bad macro name" ;;
       nested)    [[ $val == 0 || $val == 1 ]] || fail "nested must be 0 or 1" ;;
       range)     [[ $val =~ ^[0-9]{1,2}$ ]] || fail "range must be 0-99 (metres)" ;;
+      sound)     [[ $val == 0 || $val == 1 ]] || fail "sound must be 0 or 1" ;;
       *) fail "unknown field '$key'" ;;
     esac
     patch=$(jq -c --arg k "$key" --arg v "$val" '. + {($k): $v}' <<<"$patch")
@@ -231,6 +233,7 @@ apply_patch() { # entry patch display-for-nested -> entry
     . + ($p | with_entries(select(.key != "nested")))
     | (if ($p.workspace // null) != null then .workspace = (if $p.workspace == "" then null else ($p.workspace | tonumber) end) else . end)
     | (if ($p.range // null) != null then .range = ($p.range | tonumber) else . end)
+    | (if ($p.sound // null) != null then .sound = ($p.sound == "1") else . end)
     | (if ($p.nested // null) != null then (if $p.nested == "1" then .display = $disp else del(.display) end) else . end)
     | with_entries(select(.value != null))' <<<"$1"
 }
