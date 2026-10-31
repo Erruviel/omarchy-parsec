@@ -82,7 +82,10 @@ Wayland has a single seat: one pointer, one keyboard focus. A macro that holds
 a mouse button therefore holds it in exactly one window, and only the focused
 window can be driven. With `display` set, the instance runs inside a rootful
 `Xwayland :N` (`bin/parsec-nested`): one ordinary window on the Hyprland side,
-but a whole X server inside, with its own pointer and keyboard. omarchy-macro
+but a whole X server inside, with its own pointer and keyboard. It runs with
+`-host-grab`, so the mouse stays inside the focused window; **Ctrl+Shift** lets
+go of mouse and keyboard (and takes them again), and until then Hyprland's
+shortcuts do not reach the desktop, apart from binds with `dont_inhibit`. omarchy-macro
 injects into that server through XTEST (`omarchy-macro play <macro>
 --display :N`), so every instance runs its macro at the same time, whatever
 has focus, and your real mouse stays free.
@@ -139,25 +142,56 @@ for the Gamekeeper (the mob with a blue name over its head) and logs every
 sighting to `~/.cache/parsec-multi/guard-<name>.log`, with snapshots in
 `~/.cache/parsec-multi/guard-N/`.
 
-While the instance's macro runs, it also points the character at targets for
+The camera's tilt stays as you set it: a low one sees the Gamekeeper from
+farther off. While the instance's macro runs, it also points the character at targets for
 the macro to hit, turning the camera with XTEST mouse motion in the
 background (smoothly, and as rarely as it can). It has two modes, one guard
 per instance:
 
-- **Gamekeeper** (spot mode, for the drop). Mimics (yellow names) come to the
-  character, so it never walks after them: it turns toward the nearest one
-  only when none is in front of it, and keeps still for the 10 s they take
-  to respawn. The Gamekeeper it runs to: turns until the name is over the
-  crosshair, walks with W while he is far and stops once it walks into him
-  (the coordinates stop changing). Once he is gone, it walks the same way
-  back with S (backwards, facing the same way), undoing each turn, and stops
-  each stretch by the coordinates under the minimap (keep the minimap in the
-  top right corner; without them it walks back by time).
-- **Mobs** (level mode, for levels). It hunts the mobs you taught it, one
-  after another: runs to the nearest, stands there while the macro hits,
-  and once the name is gone takes the next; when nothing is in view it
-  waits, then looks around (most of a screen at a time), then waits longer.
-  Mimics and the Gamekeeper are ignored. It stays where the last fight was.
+- **Gamekeeper** (spot mode, for the drop). Mimics, and the mobs you taught,
+  come to the character, so it never walks after them: it turns toward the
+  nearest only when none is in front of it. Once those at hand are dead (no
+  damage numbers, nobody close) it has 10 s until they respawn, and looks
+  round for the Gamekeeper (five of his shots kill): three smooth steps of 90
+  degrees (`sweep`), given up if the mobs are back. With no fight to end, the
+  same every 20 s (`SWEEP_EVERY` in `bin/parsec-guard`). When HP drops by about
+  a Gamekeeper's blow in one go (2401 of 21514, `HP_SHOT`; the log says
+  `keeper-hit`) it looks round at once, fast, to the end. With mobs about or HP
+  falling but no damage numbers, in either mode, the blows fall on nothing: it
+  turns (`seek`) toward the nearest name or on round until numbers show. To him it runs at once
+  by where his name stands, stops about two metres off and goes on in short
+  steps with room for a swing, and right by him it stands facing him and lets
+  the macro hit. The skill on key 3 goes along once the blows land (`keeper-skill`
+  in the log: it took if the blue MP bar fell). The same skill drains a mob it
+  hits and gives the HP back, so below 60% HP, with a mob in front, it is used
+  every 12 s, its cooldown (`heal-try`). Once he is gone, it walks back to where
+  the macro was started.
+- Every fight leaves a film in `~/.cache/parsec-multi/films-<name>/`: 30 s at
+  four half-size pictures a second, with 5.5 minutes at two quarter-size ones
+  in `long/`; the 12 latest fights are kept. The `pos` lines of the log give the
+  bot's `fps`, the time per frame (`ms`) and the longest frame (`worst`).
+- **Mobs** (level mode, for levels). It hunts the mobs you taught it within
+  the range: wounded ones first (a red HP bar by the name), then the nearest,
+  one at a time, facing it before walking in. In reach it stands and watches
+  the damage numbers: while white or yellow ones show it stays put. With none
+  for 3 s it steps closer (`no-damage`), twice; after 9 s it leaves that mob
+  alone for a minute (a wall, a rock). With nothing left in view it looks all
+  round once for leftovers, walks back to where the macro was started, and
+  there waits for the respawn with a look round every so often. Mimics are
+  ignored. The Gamekeeper is not, in this mode either: it looks round for him
+  when the mobs are dead and when HP drops by one of his blows, and runs to him.
+
+Walks back are by the coordinates under the minimap (found wherever the
+minimap is): the macro off on the way, W held, small turns on the go
+and wide ones standing, short steps at the end, within a unit of the spot
+each way (it is chosen to the coordinate, so that all the mobs are in reach at once),
+facing the way it faced when the macro was started (the character turns with
+the camera), and the macro on again there (`home-walk`, `home-reached`). In
+spot mode a look round ends facing that way too. At the spot it also walks back when pushed off
+it with nothing about. Every start of the macro by you sets the spot where
+the character stands, whichever of macro and guard went first; it is kept in
+`guard-<name>.json`, so a guard restarted during the same run of the macro
+keeps it.
 
 **Teach** on an instance learns the mob its character is looking at: stand
 by the mob within weapon reach, aim at it, click. The guard stores the
@@ -170,27 +204,18 @@ level you want hunted. Where the ground has the name's colour (sand under
 an orange name) only pixels brighter than their surround count, and the
 character's own body under the crosshair is skipped; check the thumbnail,
 and Forget and teach again if it shows the wrong thing. Taught mobs are
-shared by all instances. Close to a mob the guard walks in short steps
-with a look between them, keeps the name centred, and if it stands by a
-mob that does not go down it steps forward (up to three times) until the
-body blocks.
+shared by all instances.
 
 When the character dies (its red HP bar, over the blue MP bar, empty for
-two seconds) the guard stops the macro and logs `dead`. If the macro was
+two seconds) the guard plays an alarm sound, stops the macro, logs `dead` and
+saves the picture to `deaths-<name>/`. If the macro was
 running (or the guard was walking the character: after the Gamekeeper,
-back from the camp), it clicks into the game every 10 s until the death
-window shows, clicks its **Revive** button (`revive-click`), and once the
-character lives again (`alive`, usually in the camp) waits there for 90%
-HP (at most 90 s), walks back to within 4 units of the spot by the
-coordinates with the macro off (`revive-walk`), then starts the macro
-there (`home-reached`). The spot to walk back to is kept in
-`guard-<name>.json`, so a restart of the guard still revives (a walk back
-cut short by a restart is not taken up again); a character found alive
-without that (revived by hand) clears it (`revive-cleared`). The walk
-needs a calibrated instance: an uncalibrated one only revives and stays
-with the macro off (`revive-stay`), as does one that does not get there
-in three minutes. On the way, an obstacle is rounded by a quarter turn and
-a longer stretch along it each time it blocks again (`home-stuck`).
+back from the Gamekeeper), it clicks into the game every 10 s until the death
+window shows and clicks its **Revive** button (`revive-click`). Once the
+character lives again (`alive`, usually in the camp) the guard waits: the way
+back to the spot is yours, the macro stays off. Whether to revive is kept in
+`guard-<name>.json`, so a restart of the guard still does; a character revived
+by hand clears it (`revive-cleared`).
 
 When the character is moved far in one go without a death seen (the
 coordinates jump by more than 100 m), the guard stops the macro, logs
@@ -201,15 +226,17 @@ character standing in the open) turns the camera slowly through about
 three full turns and takes the mouse units of one turn from where the
 picture matches the start again (the matches peak at every full turn;
 about 3300-3500 on main), then walks off for two seconds and back by the
-coordinates (`--home-test <name> :N` runs that walk alone); which way a
-turn counts in the coordinates is learned on that first walk back. A
-calibrated instance (`calibrated` in `~/.cache/parsec-multi/guard-<name>.json`)
-walks back from the Gamekeeper by the coordinates instead of retracing.
+coordinates (`--home-test <name> :N` runs that walk alone). It is optional:
+without it the guard takes the size measured on main, and the walk home
+corrects itself as it goes.
 
 In either mode the character never runs farther than the instance's **Run
 range** slider in the panel (metres from where the macro was started,
-`parsec-panel set <name> range=N`, default 15; 0 only turns; read live): at
-the edge it stands and lets the mobs come. Parsec passes mouse turns to the
+`parsec-panel set <name> range=N`, default 15; 0 only turns; read live):
+mobs farther than that are left alone, and at the edge it stands and lets them
+come (walking stops a little short of the edge: the coordinates lag behind).
+The Gamekeeper is the exception: it runs to him and kills him wherever he
+stands, then walks back. Parsec passes mouse turns to the
 game only after a click since its window last had focus, so a turn that
 does not show gets a click first, one that leaves the left button as the
 macro holds it. Instances run their X server with `-hidpi` so that the
@@ -229,7 +256,7 @@ screenshot. Needs numpy: `sudo pacman -S python-numpy`, or run it as
 -- A rootful Xwayland only presents when the compositor sends it frames, and
 -- Hyprland sends none to windows on hidden workspaces: Parsec inside would
 -- stall at ~1 fps (its macro with it) whenever you look elsewhere.
-o.window({ class = "org.freedesktop.Xwayland", title = "^Xwayland on :[0-9]+$" }, { render_unfocused = true })
+o.window({ class = "org.freedesktop.Xwayland", title = "^Xwayland on :[0-9]+.*$" }, { render_unfocused = true })
 hl.config({ misc = { render_unfocused_fps = 60 } })
 ```
 
