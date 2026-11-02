@@ -166,6 +166,15 @@ per instance:
   hits and gives the HP back, so below 60% HP, with a mob in front, it is used
   every 12 s, its cooldown (`heal-try`). Once he is gone, it walks back to where
   the macro was started.
+- Each start of the macro sets the camera the same way, about 3 s of it: all the
+  way out with the wheel, down to where the game stops it, then up by
+  `CAMERA_BACK` (`camera` in the log). The bot's distances to the Gamekeeper
+  are in pixels at this camera.
+- Beside an instance's name the panel shows the Gamekeepers killed and the times
+  of the last deaths since the macro was started at that spot. The game does not
+  report a kill: it counts when his name went from close by and nothing shot for
+  6 s. Starting the macro clears the count, unless it is started back at the same
+  spot after a death.
 - Every fight leaves a film in `~/.cache/parsec-multi/films-<name>/`: 30 s at
   four half-size pictures a second, with 5.5 minutes at two quarter-size ones
   in `long/`; the 12 latest fights are kept. The `pos` lines of the log give the

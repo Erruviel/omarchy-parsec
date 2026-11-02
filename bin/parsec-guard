@@ -78,7 +78,7 @@ KEY_SKILL = 12  # X keycode of 3 (evdev 4): the skill for the Gamekeeper
 NEAR = 120  # px at 1080p between the target's name and the character's: close enough to hit
 WALK_MAX = 6.0  # s of walking at one go, then stop and look again
 CHAR_DY = -30  # px at 1080p: the character's own name plate, relative to the crosshair
-HIT_DX, HIT_DIST = 90, 180  # px at 1080p: a Mimic this far at most is in front, being hit
+HIT_DX, HIT_DIST = 55, 110  # px at 1080p: a Mimic this far at most is in front, being hit
 # Mobs the user taught (parsec-guard --teach): colour, width and text shape of
 # the name plate, and how far its name sits from the character's when it is
 # in reach. Shared by all instances.
@@ -92,6 +92,10 @@ TEACH_LIT = 120  # lit pixels of a name reach at least this when taught (dark re
 # grey levels at half size; found at other scales by resizing.
 REVIVE_TPL = np.frombuffer(base64.b64decode("DAwMDAsLCwwLCwwNDg4ODg4ODg4ODwwuhJSUlZaWlpaWlpaWlpaWlpaWlpaWlpWVlZaWlpaWlpaXlpaWlpaWlpaWlpeXl5eXl5eXl5aWlpaWlZWWlpaWlpaWlpeWlZSShQwMDAwLCwsMCwsMDQ4ODg4ODg4ODg4JR5SQkJGSk5OTk5OTk5OTk5OTk5OTk5SUlJKSkpKSk5OTk5KSkpOTk5KSkpGTk5OTk5OTk5OSkpGRkpKSkpKSk5OTlJSUk5KRj5IMDAwMCwsLDAwMDA0NDg4ODg4ODg4OCEiVkZKSk5OSkpOTkpKSkpKSkpKTk5OUlJSUkpKSkpOTk5OSkpKUlJSUkpKSk5OTk5OTk5OTk5KSkpKRkZKSkpKTk5SUlJOSkpGTDAwMDAwMDAwNDQ0NDQ0NDg4ODg4ODghIlpKTk5STkpKSkpKSkpKSkpKSkpKTk5SUlJOTlpaVk5OTk5KTlJSWlZSTk5OUlJSUlJSUlJOSkpKSkZGSkpKSk5SUk5OTk5OSlAwMDAwNDQ4ODg4ODg0NDQ0NDAwNDQ4JSZeUlJSUk5OTkpKSkpKSkpKSkpKSk5OUlJSViGtqhZaVlpSTk5OUgouWlJSTk5WUlJSUlZWUk5KSk5KSkpKSkpKTk5OTlJOTkpMMDAwMDQ0ODg4ODg4NDQ0NDQwMDQ0OCUmYlJOUk5OSkpKSkpKSkpKSkpOTk5OTlJSUmGw6UkSQmJCVkZGSkH6Ik5GNj5COlJOTlJWVlJOSkpKSkpKSkpKSkpOTlJSUlJKUDAwLCwwMDQ4ODg4ODQ0NDQ0MDAwNDglKmJOTk5KSkpKSkpKSkpKSkpKTk5WVlJSUlJdsRmpDimlVamRsfWJfcVmIW3xgVHWUk5SUlJSUk5OTk5KSkpKSkpKTlJSUlZWTlQwLCwsLCwwNDQ0NDQ0NDQ0NDAwMDA4JSpiTk5OSkpKSkpOTk5KSkpKSk5SVlZSUlJSXbjY7ZYk8VUtnUlpqUW5Ia0xrQEpSk5SSkpOUlZSUlJOTk5KSkpKSlJSUlJSUk5YMCwsLCwsMDQ0NDQ0NDQ0NDQwMDAwOCUmYk5OTk5OTk5KTk5OSkpKSkpOUlJSUk5OTlmxWeUt5QF50jkNAiE1zZDNrcUBne5GTkpKSlJSUk5OTk5OSkpKSkpSUlJSUlJOWDgwMDAwMDQ4ODg4NDQ0NDQ0MDAwMDglJmJOTk5OTk5OTkpOTkpGSkpKSk5OTkpGRkZN8cJJkdXNceZdsZ5FsgYRQh49mYIORkpKSk5OUk5OTk5OTkpKSkpKUlJSUlJSSlg8ODg4ODg4PEBAPDg4ODg4ODQwMDA4JSJeTlJSUlJSTk5KSk5KSkZGRkpKSkpKSkZGRkpKRkpKTkpGSlpaQkJGSkpSUlZOSkZGSk5OUk5OTk5OTk5OSkpKSk5SUlJOSkpYQEBAQEA8ODw8QDw8PDw4ODg4NDQ0NCUmWkpOTk5OTkpKSkpKSkpGRkZKSk5OSkpKSkpKSkpKTk5KRkZSTkJGSkpKUlJOTk5KRkpOUlJSTk5OTk5OTkpKSkpKSk5KSkZCVDw8QEBAODQ0ODw8PDw8ODg4ODQ0NDQk7kpOTk5OTk5OTk5SUlJOTk5OUlJWVlJOTk5OTlJOTlJOUk5OSkpOUlJOSk5WVlJWVlJSVlpWVlZWUlJOTk5OTk5OTk5OTkpGRlA0NDQ0NDQwMDA0NDQ4ODg4ODg0NDQ0MEVqLi4yLi4uMjI2Njo6OjY2Ojo+Pj46Ojo6Ojo6Ojo6OjY6Ojo6Oj4+Pjo+QkJCPj4+PkJCQj4+Pj46Ojo6Ojo6Ojo6Ojo2MjmIMDAwMDAsLCwsMDQ0NDQ4ODg4NDQ0NDQwQHBwdHRwaGhsbHBwcHB0cHR0eHh4eHh4eHh4eHh4eHh0dHh8fHx4eHh8fHx8fHx8eHh8fHx8eHh4eHh4eHh4eHh4eHyAgICAUDAwMDAwLCwsLDAwMDAwNDQ0NDQ0NDQ0NDAwMDAsKCgkKCwsLCwsLCwsMDAwMDAsLDAwMDQwMDAwMDAwMDAwMCwwNDQ0NDQwMDAwNDg4ODg4NDQ0NDQ0NDQ0NDQ4ODg0NDgwMDAwMDAsLCwwMDAwMDQ0NDQ0NDQ0NDQ0NDQ0NDAwMDQ0NDQ0NDAwMDQ0NDQ0MDA0NDQ0NDQ0NDQ0NDQ4ODg0ODw4ODw8PDg4ODw8PDw4ODg4ODg4ODg4ODg4ODg0NDQ0MDAwMDAwLCwwMDAwMDAwNDQ0NDQ0NDQ0NDQ0NDQwLDAwNDQ0NDAwMDA0NDQ0MCwwNDQ0NDQ0NDQ0NDQ0ODg4ODg8PDw8PDw8ODg4PDg4ODg0NDQ0NDQ0NDQ0NDQ0NDQ0NDQwMDAwMCwsMDAwMDAwMDQ4ODQ0NDQ0NDQ4ODg0MDAwMDQ0NDQwLCwsMDQ0NCwsMDA0NDg4NDQwMDAwNDg4ODg4PDw4PDw8PDg4ODg4ODg4NDQ0NDQ0NDQ0NDQ0NDAwNDQwNDQ0NDAwMDg4PDQ4PDw8QDw4ODw8PDw8PDxAQDg8ODw8PDw4MCwoKCwwNDAwLDA0ODw8PDw4NDQwMDQ4PDg0ODw8ODQ0ODg4ODw8ODg4NDQ0NDA0NDQ4NDQ0NDQ0NDQ4XFBcXFxQVEhEVFxYVGBcXFxMQDhETFBUVExUaFhQVFRQUFBQSERAQERITExMSEhMUFBQTExQVFBISEhIVFhQUExERERMTFBQTExQTExIRExMQERITEhETFBETFBISEhERQhkbHhwdIR0VFxQfKiguHh4gJyo1MycwLCYWEx0sLzAvJiYpLzM1NDQzMzMzNDU3ODk4NjQ1NjQxMzc4Ozo6OjYzMzU3Nzc3Nzc3NjU1NTk6NTQ1NTU0NjYyNDUzMzQzMksfQkQrGRYSFhURHDQ6QiMdJzo8QkQ+MCUqFw4mQ0ZHSElLTE1MS0tLTE1NTk5PTk5OTUtKSktLTVFVVlNRU1RRTk9RUE9OTk5PT09PT1BTU01LTExLS05RUFFSU1JRT0w8OlhJKRIMDBMYEA85RkQtFiAzOD0/PzUyNT04SE1MS0xLSklJSUpKTE1OT05MSUZFRUdISEpNTlJXVFhRTlJTTkpKTk1OUFBRUVFRUU9NS0pJR0hJSUxNUVFRUVNSS0VEMUtGOCMSDQ4UGxEPP0RDNxcYLj5ARUhKTVFXUVZMSEdGR0lKS0tLS0xMS0pIRkVFRUZHSUlJS0xQU1JcT0xOTUlHSU9SU1NSU1NST01JSEhISUpLS0tPUVNUUlBNTEtMUS1LOCQYEgoNFxQOEDlBPjwvLUZNS1BSTEtLSkhHR0VGSElKSkpLSkhHR0ZGRkZGRkVERERHS01OTU1QVEpHSEtNUFNUVlNQTk1NTEtKSUtLS05OT09LTUlIS0lNTU9RUlEnNj4xHxIPEhMRFCNFR0dPUU1PTEpIREJGR0hJSkpJSUpLS0pJSUdHRkdISUlIR0ZFRkhLTU9OTUtISEpLTFBUUlBQU1NRT05NTU1NS0xMSklNTUtJR0lERExKTUtMTE1PRydBOiYcFx0eJTAnTVNQTk5OSkRCRUZDSE1OTU1MTExMS0tJSElJSklIR0ZFRkhMTU1MSklKSEZFSUxPVFJTUk9MTVBPUFBPTk9OTUxLS0lHSklHR0pKRkdNS0xLS0tMTHNqXkkmGRlFRjUyFy9QTEdHR0ZGR0tLSktLS0tLTEtLS0tLS0tMS0pKSUhHR0pLTExLS0pKTExOT1BRUlNRT09PS0tMS0xNTExNTU1OT05LSEdHRENITEtLTU9MSEhHRUWAhlEsHg8QRD4uPDxASUZERkdJSktLTExMTExMS0tLS0tLTExMTEtLTE1NTk5OTUxNTk5OT09PUFBQT09OTUpKS0hIR0hJSUlMT1BQUFFOSkZFRkNDSlBQT01QSURFRUVGd5BIFhUSITdBRk1MTUpISUpMTU1NTEtLS0xMTU1MTUxLSkpLS0xMTE1NTU1MTExNTExMTExMS0xNTU1MSkhHSExJSUlHSUtOUFJSUE5NS0hHR0pJSU5KSEZCRUFFSU1SUw=="), np.uint8).reshape(31, 97).astype(np.float32)
 REVIVE_MIN = 0.85  # correlation that makes a patch the button (0.91-0.99; once 0.78 elsewhere)
+HP_BAR_GAP = 12  # rows of the MP bar its numbers may cut
+DEAD_UNSEEN = 8.0  # s of an empty HP bar: dead even if the Revive button was not found
+CAMERA_BACK = 460  # mouse units up from where the game stops the camera looking down, at the speed of set_camera: 425 hid the Gamekeeper shooting from afar (17:58), 500 is half sky, 575 and more the stop looking level
+CAMERA_WHEEL = 40  # notches out: from anywhere to the farthest it goes
 REVIVE_SPOT = (0.62, 0.19)  # where in the template to click: the button's middle
 MOB_REACH = 75  # px at 1080p between a taught mob's name and the character's: in reach of a blow (hits seen at 46-66)
 REF_Y = 30  # px at 1080p below the crosshair: the character's middle, to tell where a close mob stands (names over it: ahead, under it: behind)
@@ -99,21 +103,23 @@ FRONT = math.radians(25)  # a close mob within this angle of the way the charact
 UNITS_RAD = 525  # mouse units per radian of camera turn when not calibrated (main measured 525-593)
 TEXT_CONTRAST = 40  # a name's pixels are this much brighter (max channel) than what is around them
 TEXT_POP = 30  # a pixel of a taught name is this much brighter than the mean of the 15 px around it
+# The pixels of the Gamekeeper below go with the camera set at a macro start, all the way
+# out: 0.61 of what was measured nearer (the character 165 px tall against 270).
 KEEPER_RANGE = 15.0  # metres from where a chase starts the character may run; set per instance in the panel
 KEEPER_GONE = 1.5  # s without the Gamekeeper's name: dead (or gone), walk back
-KEEPER_AIM = math.radians(8)  # his name farther aside than this gets a turn on the run: at speed he soon leaves the picture
-KEEPER_FAR = 250  # px at 1080p: his feet this far above the character's, he is well ahead
-KEEPER_BODY = 450  # px at 1080p from his name to his feet at the most (right by the camera)
+KEEPER_AIM = math.radians(4)  # his name farther aside than this gets a turn on the run: at speed he soon leaves the picture
+KEEPER_FAR = 150  # px at 1080p: his feet this far above the character's, he is well ahead
+KEEPER_BODY = 275  # px at 1080p from his name to his feet at the most (right by the camera)
 CHAR_FEET = 141  # px at 1080p below the crosshair: the character's own feet
-KEEPER_STEP = 350  # px at 1080p: he is within a couple of metres (name 240 px over the crosshair just before contact, on a film): steps and swings, it ran past him otherwise
-KEEPER_SKILL = 900  # px at 1080p: about its 6 m across the picture (some 150 px a metre by the character's height)
+KEEPER_STEP = 215  # px at 1080p: he is within a couple of metres (name 240 px over the crosshair just before contact, on a film): steps and swings, it ran past him otherwise
+KEEPER_SKILL = 550  # px at 1080p: about its 6 m across the picture (some 150 px a metre by the character's height)
 FILM_EVERY = 0.25  # s between pictures of the film of a fight
 FILM_FRAMES = 120  # 30 s of them
 FILM_AFTER = 15.0  # s of the fight itself in the film
 FILM_LONG_EVERY = 0.5  # s between pictures of the long film, quarter size
 FILM_LONG_FRAMES = 660  # 5.5 min of them: 5 before the fight, the fight, the time to save it
 FILMS_KEPT = 12  # fights kept in films-<name>/
-KEEPER_SKILL_AHEAD = 340  # px his feet are up the picture at most: about the skill's 6 m (he stood some 4 m off at 290)
+KEEPER_SKILL_AHEAD = 207  # px his feet are up the picture at most: about the skill's 6 m (he stood some 4 m off at 290)
 KEEPER_SKILL_AIM = math.radians(6)  # off the way it faces: he has to be under the crosshair ("Select target"; no try at 10 degrees or more took)
 SKILL_CHECK = 0.9  # s after it for the MP bar to show the cost (the stream lags)
 BUTTON_GAP = 1.2  # s with the left button up: more than the macro's own gap between passes (0.8 s)
@@ -124,28 +130,40 @@ SCAN_BYTES = 3840 * 2160 * 3  # the largest picture it takes
 HEAL_AT = 0.6  # of the HP: below this, with a mob in front, the skill on key 3 drains it
 SKILL_RETRY = 1.5  # s before trying the skill again when no MP went
 SKILL_REST = 12.0  # s the skill takes to come back
-KEEPER_NAME_FAR = -130  # px at 1080p from the crosshair: his name above this: he stands well ahead (measured: -173 at some 5 m, -122 by the character)
-KEEPER_NAME_FEET = 40  # px from such a name to where his feet show (measured: name -275, feet -236)
+KEEPER_NAME_FAR = -80  # px at 1080p from the crosshair: his name above this: he stands well ahead (measured: -173 at some 5 m, -122 by the character)
+KEEPER_BIG = 146  # px at 1080p from his name to his feet: as tall as this he is about in reach, whatever the camera (films: 155-210 some 4 m off, 310 or more at contact)
+KEEPER_TOUCH_DX = 300  # px at 1080p: farther aside he is not at hand, however low his feet show (films: 120-260 at contact; 669 stood for it at 01:29, 5 m off)
+KEEPER_BRAKE = 430  # px at 1080p: from here on it comes up to him in short runs (he runs at it too: at 330 it went by, 11:07)
+BRAKE_RUN, BRAKE_LOOK = 0.45, 0.4  # s
+BRAKE_CHECK, BRAKE_GAIN, BRAKE_FREE = 1.5, 30, 2.5  # every so many s it has to have come so many px nearer, or it runs freely for so long
+KEEPER_HOLD = 1.2  # s after he last stood right by it that it stays with him, whatever his feet or his place across the picture read: close to the camera a step of his throws him 500 px aside, and it ran off (vm2, 23:23)
+KEEPER_SMALL = 67  # px at 1080p from his name to his feet: shorter than this he is still far off, whatever the camera (films: 47-108 far off, 190 or more by the character)
+KEEPER_NAME_FEET = 25  # px from such a name to where his feet show (measured: name -275, feet -236)
 KEEPER_NEAR_FROM = 420  # px his feet are up the picture: beyond this he counts as far
-KEEPER_MID_PX = 12.0  # px a turn of a degree moves him a couple of metres off (measured on a fight)
-KEEPER_NEAR_PX = 9.0  # px at 1080p a man close by moves on the picture per degree of turn (measured on a fight)
-KEEPER_STAND = 130  # px at 1080p: he is right by the character: stand, face him, hit
+KEEPER_MID_PX = 7.5  # px a turn of a degree moves him a couple of metres off (measured on a fight)
+KEEPER_NEAR_PX = 8.5  # px at 1080p a man close by moves on the picture per degree of turn (measured on fights: 8-20)
+KEEPER_STAND = 80  # px at 1080p: he is right by the character: stand, face him, hit
 KEEPER_SHOOTS = 2.5  # s since HP last fell: lost from view, he is still shooting
-KEEPER_CLOSE = 250  # px at 1080p: his name nearer than this and gone means he is dead
+KEEPER_CLOSE = 150  # px at 1080p: his name nearer than this and gone means he is dead
 CHASE_MAX = 300.0  # s after the Gamekeeper before walking back anyway
+MIMIC_FRONT = math.radians(35)  # a Mimic this far off the way it faces is before it
+MIMIC_HOLD = 0.8  # s after the last number before it turns to the next one
+MIMIC_TURN = 0.6  # of the angle to a Mimic close by
+MIMIC_CLOSE_REST = 1.2  # s after a turn to a Mimic close by
+MIMIC_CLOSE = 250  # px at 1080p from the character's name: as near as this a Mimic stands round it
 MIMIC_REACT = 0.3  # s with no Mimic in front before turning to one
 TURN_REST = 0.4  # s at least between two turns toward Mimics
-SEEK_AFTER = 1.2  # s without numbers, with mobs about, before turning to find them
-SEEK_TURN = math.radians(120)  # the turn when no name says which way
+SEEK_AFTER = 2.0  # s without numbers, with mobs about, before turning to find them
+SEEK_TURN = math.radians(80)  # the turn when no name says which way: the view is 92 degrees wide, 120 left blind strips he shot from (22:29)
 HIT_RECENT = 1.5  # s after HP last fell that the character counts as under blows
 HP_EVERY = 0.2  # s between looks at the HP bar
 MIMIC_RESPAWN = 10.0  # s Mimics take to come back once all are dead: keep still meanwhile
 KEEPER_FOCAL = 850  # px at 1080p: a flat camera's focal length, for the angle of a far name
-KEEPER_REACH = 90  # px at 1080p from feet to feet: in reach, his body stops it about there
+KEEPER_REACH = 55  # px at 1080p from feet to feet: in reach, his body stops it about there
 SWEEP_EVERY = 20.0  # s between looks round for the Gamekeeper with no fight to end (five of his shots kill)
 SWEEP_CLEAR = 3.0  # s with no numbers, no name, no HP bar in view, no HP lost: the mobs are dead, a few s to their respawn
-SWEEP_STEPS = 3  # turns in one look round
-SWEEP_STEP = math.radians(90)  # each: the view is about 92 degrees wide, so three see all round
+SWEEP_STEPS = 4  # turns in one look round
+SWEEP_STEP = math.radians(80)  # each: the view is about 92 degrees wide, so four see all round with an overlap
 SWEEP_TURN = 0.22  # s for one such turn
 SHOT_TURN = 0.15  # s for one when he has just hit
 SHOT_REST = 6.0  # s between such looks: at a blow a second, any less and it only spins, unable to hit
@@ -163,15 +181,27 @@ LOCK_RADIUS = 160  # px at 1080p a locked mob may move between two looks
 LOCK_LOST = 1.0  # s without the locked mob before it counts as dead or gone
 WOUNDED_BONUS = 250  # px at 1080p nearer than it is that a wounded mob counts
 PX_PER_M = 38  # px at 1080p per metre on the ground, from above
-COORD_NEAR_MIN = 0.72  # fit of a number near the last position (right ones 0.82+, none else over 0.61)
+COORD_START_MIN = 0.7  # fit of a plain reading good enough for the spot when a chase starts before anything surer (vm2 09:26: 0.75, the spot then saved 28 units off, where the chase got to)
+COORD_NEAR_SURE = 0.82  # a fit near the last position this good needs no second look
+COORD_NEAR_MIN = 0.64  # fit of a number near the last position (right ones 0.82+, none else over 0.61)
 RANGE_MARGIN = 8.0  # units short of the range that walking stops
 COORD_MAX = 4500  # no coordinate seen so far passed 3500
+COORD_NO_DIGIT = 0.4  # of the brightest digit: darker than this, that place is empty (measured 0.13-0.2 empty, 0.81 and more with a digit)
+COORD_STILL = 5  # the same weak reading this many times running: believed while nothing else is known
+COORD_STILL_MIN = 0.6
 COORD_ALONE_MIN = 0.78  # fit of a plain reading (still 0.84+, nothing else over 0.7)
-COORD_BOXES = ((0.86, 0.08, 1.0, 0.26), (0.15, 0.03, 1.0, 0.85))  # game-picture fractions searched for the "x, y" line: the corner, else everywhere
+COORD_BOXES = ((0.86, 0.08, 1.0, 0.26), (0.2, 0.6, 0.5, 0.95), (0.15, 0.03, 1.0, 0.85))  # game-picture fractions searched for the "x, y" line: the corner, by the HP bars (a game restart puts the minimap there), else everywhere
 STREAM_LAG = 0.25  # s for a turn sent to show in the picture (measured 0.15 at 30 frames a second; 0.6 and more only at the 1 fps of a window not rendered)
 HOME_OK = 1.5  # units from home that count as back: the very spot, or the next whole coordinate, also aslant
+HOME_CLOSE = 3.0  # units from home where a step that shows no change ends the walk: there, not blocked
 HOME_NEAR = 16.0  # units from home from where it goes in short steps
 RUN_SPEED = 8.0  # units a second (measured on main: 25 in 3 s)
+HEADING_RUN = 14.0  # units run straight before the way is read off the coordinates: at 6 a misread of 3 turned it round (23:49)
+STATUS_LATE = 8.0  # s after a death that a status of the macro cannot be trusted
+KILL_SURE = 6.0  # s with his name gone from close by and no shot: he counts as killed (the game does not say)
+STATS_SAME = 15.0  # units: a macro started this near the spot, after a death, keeps the count
+BACK_WAIT = 4.0  # s since the Gamekeeper was last seen before it walks back to the spot
+WALK_CLICK = 2.0  # s at least between clicks that give Parsec the mouse back on the way home
 HEADING_LAG = 0.6  # s from a turn until the coordinates show the new way (they come later than the picture: at 0.25 the walk home went round in circles)
 SETTLE = 0.9  # s from a stop until the coordinates show where it stands
 RETURN_MAX = 60.0  # s of walking home before giving up
@@ -186,8 +216,9 @@ DIGITS_L = np.array([[-0.122, -0.091, -0.035, -0.069, -0.114, -0.119, -0.12, -0.
 # A second 1, as it shows at some spots of the line (measured on "3185, 1269",
 # read 3485, 4269 before): each digit may have several patterns.
 DIGITS_L = np.vstack([DIGITS_L, np.array([-0.148, -0.101, -0.056, -0.084, -0.130, -0.099, -0.025, -0.148, -0.101, -0.056, -0.084, -0.130, -0.099, -0.025, 0.055, 0.210, 0.196, 0.023, -0.042, 0.073, 0.197, 0.078, 0.209, 0.194, 0.028, -0.086, -0.014, 0.051, -0.075, 0.066, 0.143, 0.018, -0.123, -0.082, 0.004, -0.112, 0.034, 0.133, 0.020, -0.132, -0.126, 0.041, -0.112, 0.028, 0.130, 0.023, -0.107, 0.005, 0.178, -0.117, 0.019, 0.120, 0.016, -0.051, 0.136, 0.159, -0.115, 0.023, 0.122, 0.039, 0.014, 0.160, 0.141, -0.110, 0.024, 0.124, 0.058, 0.024, 0.141, 0.278, -0.164, -0.154, -0.147, -0.152, -0.156, -0.145, -0.130], dtype=DIGITS_L.dtype)])
+DIGITS_L = np.vstack([DIGITS_L, np.array([-0.042, 0.005, 0.012, 0.012, -0.06, -0.113, -0.122, -0.042, 0.005, 0.012, 0.012, -0.06, -0.113, -0.122, 0.097, 0.179, 0.158, 0.152, 0.011, -0.104, -0.031, 0.135, 0.091, -0.04, -0.067, -0.096, -0.122, 0.12, 0.146, 0.08, -0.078, -0.124, -0.126, -0.126, 0.181, 0.165, 0.245, 0.212, 0.112, -0.061, -0.12, 0.118, -0.086, -0.063, 0.017, 0.197, 0.064, -0.095, -0.061, -0.124, -0.124, -0.101, 0.125, 0.131, -0.078, -0.12, -0.046, -0.086, -0.021, 0.195, 0.064, -0.098, -0.082, 0.163, 0.247, 0.22, 0.127, -0.057, -0.117, 0.023, -0.095, -0.069, -0.086, -0.101, -0.118, -0.12, -0.109], np.float32)])  # the 5 of a real picture: the first one fitted an 8 better (1359 read as 1389)
 COORD_SPLIT = False  # find the digits by the gaps between them
-COORD_FONTS = ((6.0, -1.4, 5.5, 7, (6, 10), DIGITS, np.arange(10)), (6.6, 0.5, 6.5, 8, (7, 11), DIGITS_L, np.append(np.arange(10), 1)))
+COORD_FONTS = ((6.0, -1.4, 5.5, 7, (6, 10), DIGITS, np.arange(10)), (6.6, 0.5, 6.5, 8, (7, 11), DIGITS_L, np.append(np.arange(10), [1, 5])))
 DEATH_SOUND = "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
 PANEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parsec-panel")
 # Under `uv run --script` the script's own venv is first on PATH; its python3
@@ -208,6 +239,10 @@ class XImage(ctypes.Structure):
     ]
 
 
+class ShmSegment(ctypes.Structure):
+    _fields_ = [("shmseg", ctypes.c_ulong), ("shmid", ctypes.c_int), ("shmaddr", ctypes.c_void_p), ("readOnly", ctypes.c_int)]
+
+
 class Screen:
     """Grabs the root window of one X server as an RGB array."""
 
@@ -225,6 +260,66 @@ class Screen:
         if not self.dpy:
             sys.exit(f"cannot open {display}")
         self.root = X.XDefaultRootWindow(self.dpy)
+        self.shm_image = self.shm_pixels = None
+        self.shm_size = (0, 0)
+        self.seg = ShmSegment()
+        self.libc = ctypes.CDLL(None)
+        self.libc.shmat.restype = ctypes.c_void_p
+        self.libc.shmat.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        self.libc.shmdt.argtypes = [ctypes.c_void_p]
+        self.libc.shmctl.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+        self.libc.shmget.argtypes = [ctypes.c_int, ctypes.c_size_t, ctypes.c_int]
+        name = ctypes.util.find_library("Xext")
+        self.Xext = ctypes.CDLL(name) if name else None
+        if self.Xext:
+            E = self.Xext
+            E.XShmQueryExtension.argtypes = [ctypes.c_void_p]
+            E.XShmCreateImage.restype = ctypes.POINTER(XImage)
+            E.XShmCreateImage.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+            E.XShmAttach.argtypes = E.XShmDetach.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            E.XShmGetImage.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+            X.XDefaultVisual.restype = ctypes.c_void_p
+            X.XDefaultVisual.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            X.XDefaultDepth.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            X.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            if not E.XShmQueryExtension(self.dpy):
+                self.Xext = None
+
+    def shm_open(self, w: int, h: int) -> None:
+        """Shared memory for pictures of this size: the X server writes into it
+        at once (2 ms against 12 through its socket)."""
+        X, E, libc, seg = self.X, self.Xext, self.libc, self.seg
+        if self.shm_image:
+            E.XShmDetach(self.dpy, ctypes.byref(seg))
+            X.XSync(self.dpy, 0)
+            libc.shmdt(seg.shmaddr)
+            X.XFree(self.shm_image)
+            self.shm_image = self.shm_pixels = None
+        img = E.XShmCreateImage(self.dpy, X.XDefaultVisual(self.dpy, 0), X.XDefaultDepth(self.dpy, 0), 2, None, ctypes.byref(seg), w, h)  # ZPixmap
+        if not img:
+            raise OSError("XShmCreateImage failed")
+        c = img.contents
+        if c.bits_per_pixel != 32:
+            raise OSError(f"unsupported {c.bits_per_pixel} bpp")
+        size = c.bytes_per_line * h
+        seg.shmid = libc.shmget(0, size, 0o1600)  # IPC_PRIVATE
+        if seg.shmid < 0:
+            raise OSError("shmget failed")
+        seg.shmaddr = libc.shmat(seg.shmid, None, 0)
+        c.data = seg.shmaddr
+        seg.readOnly = 0
+        if not E.XShmAttach(self.dpy, ctypes.byref(seg)):
+            raise OSError("XShmAttach failed")
+        X.XSync(self.dpy, 0)
+        libc.shmctl(seg.shmid, 0, None)  # IPC_RMID: gone with the last user, however this process ends
+        self.shm_image, self.shm_size = img, (w, h)
+        self.shm_pixels = np.frombuffer((ctypes.c_ubyte * size).from_address(seg.shmaddr), np.uint8).reshape(h, c.bytes_per_line // 4, 4)[:, :w]
+
+    @staticmethod
+    def to_rgb(bgrx: np.ndarray) -> np.ndarray:
+        rgb = np.empty((*bgrx.shape[:2], 3), np.uint8)  # channel by channel: three times the speed of [:, :, 2::-1]
+        rgb[..., 0], rgb[..., 1], rgb[..., 2] = bgrx[..., 2], bgrx[..., 1], bgrx[..., 0]
+        return rgb
 
     def size(self) -> tuple[int, int]:
         r, x, y = ctypes.c_ulong(), ctypes.c_int(), ctypes.c_int()
@@ -234,6 +329,11 @@ class Screen:
 
     def grab(self) -> np.ndarray:
         w, h = self.size()
+        if self.Xext:
+            if self.shm_size != (w, h):
+                self.shm_open(w, h)
+            if self.Xext.XShmGetImage(self.dpy, self.root, self.shm_image, 0, 0, 0xFFFFFFFF):
+                return self.to_rgb(self.shm_pixels)
         img = self.X.XGetImage(self.dpy, self.root, 0, 0, w, h, 0xFFFFFFFF, 2)  # ZPixmap
         if not img:
             raise OSError("XGetImage failed")
@@ -243,7 +343,7 @@ class Screen:
                 raise OSError(f"unsupported {c.bits_per_pixel} bpp")
             raw = ctypes.string_at(c.data, c.bytes_per_line * c.height)
             bgrx = np.frombuffer(raw, np.uint8).reshape(c.height, c.bytes_per_line // 4, 4)[:, : c.width]
-            return bgrx[:, :, 2::-1].copy()  # BGRX -> RGB
+            return self.to_rgb(bgrx)
         finally:
             self.X.XFree(img.contents.data)
             self.X.XFree(img)
@@ -854,6 +954,48 @@ class Input:
             units -= d
             time.sleep(0.002)
 
+    def pitch(self, units: int, seconds: float) -> None:
+        """Vertical mouse motion, spread like turn(): positive tilts the camera
+        to look down from above."""
+        n, sent = max(1, round(seconds / 0.01)), 0
+        for i in range(1, n + 1):
+            s = i / n
+            d = round(units * s * s * (3 - 2 * s)) - sent
+            if d:
+                self.xt.XTestFakeRelativeMotionEvent(self.screen.dpy, 0, d, 0)
+                self._flush()
+                sent += d
+            time.sleep(0.01)
+
+    def wheel_out(self, notches: int) -> None:
+        """The camera out, a notch of the wheel at a time."""
+        for _ in range(notches):
+            self.xt.XTestFakeButtonEvent(self.screen.dpy, 4, 1, 0)
+            self._flush()
+            time.sleep(0.02)
+            self.xt.XTestFakeButtonEvent(self.screen.dpy, 4, 0, 0)
+            self._flush()
+            time.sleep(0.03)
+
+    def set_camera(self) -> tuple[int, bool]:
+        """The camera as chosen on main: all the way out, then the same tilt each
+        time, counted from where the game stops it looking down. The pointer
+        stops at the screen's edge, so it starts from the top one; if it
+        jumps on the way (and the camera with it), the count is off: again."""
+        self.wheel_out(CAMERA_WHEEL)
+        bottom = self.screen.size()[1] - 8
+        for attempt in range(1, 4):
+            self.pitch(-self.pointer()[0], 0.4)
+            if self.pointer()[0] > 3:
+                continue
+            self.pitch(bottom, 0.8)
+            if abs(self.pointer()[0] - bottom) > 3:
+                continue
+            self.pitch(-CAMERA_BACK, 0.4)
+            if abs(self.pointer()[0] - (bottom - CAMERA_BACK)) <= 3:
+                return attempt, True
+        return 3, False
+
     def button(self, down: bool) -> None:
         self.xt.XTestFakeButtonEvent(self.screen.dpy, 1, int(down), 0)
         self._flush()
@@ -875,6 +1017,11 @@ class Input:
         pointer, so the game takes it where it is). The pointer stays there:
         moved back, with the window gone, the game reads a jerk of the camera."""
         self.xt.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+        # From beside it: with the pointer there already no motion goes out, and
+        # click after click went unheard (13 at 13:27, the character left lying).
+        self.xt.XTestFakeMotionEvent(self.screen.dpy, -1, int(x) - 12, int(y) + 3, 0)
+        self._flush()
+        time.sleep(0.05)
         self.xt.XTestFakeMotionEvent(self.screen.dpy, -1, int(x), int(y), 0)
         self._flush()
         time.sleep(0.15)
@@ -886,14 +1033,18 @@ class Input:
         time.sleep(0.08)
         self.button(False)
 
-    def button_held(self) -> bool:
+    def pointer(self) -> tuple[int, int]:
+        """Where the pointer is up the screen, and the state of the buttons."""
         X = self.screen.X
         X.XQueryPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong] + [ctypes.c_void_p] * 7
         r, child = ctypes.c_ulong(), ctypes.c_ulong()
         rx, ry, wx, wy = ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
         mask = ctypes.c_uint()
         X.XQueryPointer(self.screen.dpy, self.screen.root, ctypes.byref(r), ctypes.byref(child), ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx), ctypes.byref(wy), ctypes.byref(mask))
-        return bool(mask.value & (1 << 8))  # Button1Mask
+        return wy.value, mask.value
+
+    def button_held(self) -> bool:
+        return bool(self.pointer()[1] & (1 << 8))  # Button1Mask
 
     def release(self) -> None:
         for code in list(self.keys_down):
@@ -983,9 +1134,9 @@ def _coord_line(sub: np.ndarray, mx: np.ndarray, mn: np.ndarray, neutral: np.nda
     return gray, int(top), int(bot), int(below[0])
 
 
-def _glyph_starts(gray: np.ndarray, top: int, bot: int, cx: int, w: int) -> list[float] | None:
-    """Where each of the eight digits begins, from the dark columns between
-    them, or None unless there are four either side of the comma."""
+def _glyph_spans(gray: np.ndarray, top: int, bot: int, cx: int) -> list[tuple[int, int]] | None:
+    """First and last column of each of the eight digits, from the dark columns
+    between them, or None unless there are four either side of the comma."""
     col = gray[top : bot + 1].max(axis=0).astype(np.float32)
     lit = col >= 0.55 * col.max()
     groups, start = [], None
@@ -999,33 +1150,83 @@ def _glyph_starts(gray: np.ndarray, top: int, bot: int, cx: int, w: int) -> list
     right = [g for g in groups if g[0] > cx + 1][:4]
     if len(left) < 4 or len(right) < 4:
         return None
-    return [(a + b) / 2 + 0.5 - w / 2 for a, b in left + right]
+    return left + right
+
+
+COORD_TEXT_H = 8  # px from the top to the bottom row of the "x, y" the digit patterns were taken at
+
+
+def _font_at(font: tuple, top: int, bot: int) -> tuple:
+    """The font as large as the text: a larger HUD draws the digits 10 px high,
+    not 8, and every number then read as anything (vm2, 09:50)."""
+    k = (bot - top) / COORD_TEXT_H
+    if k <= 1.0:
+        return font
+    pitch, before, after, w, grid, table, digit = font
+    return (pitch * k, before * k, after * k, round(w * k), grid, table, digit)
 
 
 def _digit_scores(gray: np.ndarray, top: int, bot: int, cx: int, gh: int, font: tuple) -> np.ndarray:
     """How well each digit fits each of the eight places: 8 x 10."""
-    pitch, before, after, w, grid, table, digit = font
+    pitch, before, after, w, grid, table, digit = _font_at(font, top, bot)
     pitch *= gh / 1080
     starts = [cx - (4 - i) * pitch + before for i in range(4)] + [cx + after + i * pitch for i in range(4)]
-    if COORD_SPLIT:
-        starts = _glyph_starts(gray, top, bot, cx, w) or starts
     out = np.full((8, 10), -1.0, np.float32)
-    for i, st in enumerate(starts):
-        for off in (-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5):
-            sc = table @ _cell(gray, st + off, top, bot, w, grid)
+    spans = _glyph_spans(gray, top, bot, cx) if COORD_SPLIT else None
+    if COORD_SPLIT and spans is None:
+        return None
+    for i in range(8):
+        if spans is None:
+            src, offs = gray, [starts[i] + o for o in (-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5)]
+        else:
+            # Each digit alone, the rest blacked out: 1s are narrow and set
+            # close, and a cell as wide as a 5 took in half the next 1 (1211
+            # read as 1244 at 0.84, vm2 09:30). Set anywhere from flush left
+            # (as a 1 stands in its cell) to centred.
+            a, b = spans[i]
+            src = gray.copy()
+            src[:, : max(a - 1, 0)] = 0
+            src[:, b + 2 :] = 0
+            mid = (a + b) / 2 + 0.5 - w / 2
+            offs = np.arange(min(mid, a - 0.5) - 1.5, max(mid, a - 0.5) + 1.51, 0.5)
+        for st in offs:
+            sc = table @ _cell(src, st, top, bot, w, grid)
             for j, v in enumerate(sc):
                 out[i, digit[j]] = max(out[i, digit[j]], v)
     return out
 
 
-def _number_near(sc: np.ndarray, centre: int, reach: int) -> tuple[int, float]:
-    """The four-digit number around centre that fits best, and its mean fit."""
+def _last_place_empty(gray: np.ndarray, top: int, bot: int, cx: int, gh: int, font: tuple) -> bool:
+    """Nothing bright in the place of the last digit. Its fit will not do: the
+    pattern of a 1 fits an empty place at 0.47 and a real, blurred digit no better."""
+    font = _font_at(font, top, bot)
+    x0 = round(cx + font[2] + 3 * font[0] * gh / 1080)
+    rows = gray[top : bot + 1]
+    place = rows[:, x0 : x0 + font[3]]
+    if place.size == 0 or float(place.max()) >= COORD_NO_DIGIT * float(rows.max()):
+        return False
+    # Narrow 1s pull the last digit in from its place (1109): count what stands
+    # after the comma.
+    lit = (rows.max(axis=0) >= 0.55 * float(rows.max()))[cx + 2 :].astype(np.int8)
+    return int((np.diff(np.concatenate(([0], lit))) == 1).sum()) <= 3
+
+
+def _number_near(sc: np.ndarray, centre: int, reach: int, before_comma: bool) -> tuple[int, float]:
+    """The number around centre that fits best, and its mean fit. Shorter than
+    four digits it stands against the comma."""
     best, fit = centre, -1.0
     for n in range(max(centre - reach, 0), min(centre + reach, 9999) + 1):
-        f = sum(float(sc[i, int(c)]) for i, c in enumerate(f"{n:04d}")) / 4
+        text = str(n)
+        at = 4 - len(text) if before_comma else 0
+        f = sum(float(sc[at + i, int(c)]) for i, c in enumerate(text)) / len(text)
         if f > fit:
             best, fit = n, f
     return best, fit
+
+
+def _coord_box(hit: tuple[float, float]) -> tuple[float, float, float, float]:
+    """The bit of the game picture around where the "x, y" was found."""
+    return (max(hit[0] - 0.03, 0.0), max(hit[1] - 0.04, 0.0), min(hit[0] + 0.1, 1.0), min(hit[1] + 0.05, 1.0))
 
 
 def read_coords(rgb: np.ndarray, near: tuple[int, int] | None = None, reach: int = 25) -> tuple[int, int, float] | None:
@@ -1046,18 +1247,19 @@ def read_coords(rgb: np.ndarray, near: tuple[int, int] | None = None, reach: int
             best, hit = r
         if best is not None and best[2] >= COORD_NEAR_MIN:
             break
-    if (best is None or best[2] < COORD_ALONE_MIN) and COORD_AT:
+    if COORD_AT or hit is not None:
         # A 1 is narrow, so the digits beside it sit off their places: 3191
-        # read as 3139. Look again, each digit where the gaps put it.
+        # read as 3139, 3181 as 3481. Look again, each digit where the gaps
+        # put it; the better fit wins.
         COORD_SPLIT = True
-        r = _read_coords_in(rgb, COORD_AT, near, reach)
+        r = _read_coords_in(rgb, COORD_AT or _coord_box(hit), near, reach)
         COORD_SPLIT = False
         if r is not None and (best is None or r[0][2] > best[2]):
             best, hit = r
     if best is not None and best[2] >= COORD_ALONE_MIN:
         COORD_MISSES = 0
         if COORD_AT is None:
-            COORD_AT = (max(hit[0] - 0.03, 0.0), max(hit[1] - 0.04, 0.0), min(hit[0] + 0.1, 1.0), min(hit[1] + 0.05, 1.0))
+            COORD_AT = _coord_box(hit)
     elif COORD_AT is not None:
         COORD_MISSES += 1
         if COORD_MISSES >= 10:  # moved
@@ -1095,14 +1297,24 @@ def _read_coords_in(rgb: np.ndarray, box: tuple[float, float, float, float], nea
             continue
         for font in COORD_FONTS:
             sc = _digit_scores(*line, gh, font)
+            if sc is None:
+                continue
             if near is not None:
-                x, fx = _number_near(sc[:4], near[0], reach)
-                y, fy = _number_near(sc[4:], near[1], reach)
+                x, fx = _number_near(sc[:4], near[0], reach, True)
+                y, fy = _number_near(sc[4:], near[1], reach, False)
                 r = (x, y, min(fx, fy))
             else:
+                # Nothing in the last place: a second number of three (3276, 881).
+                last = 7 if _last_place_empty(*line, gh, font) else 8
+                # The map ends at 4500 and a number of four starts with no 0: a 3
+                # that looks like a 9 is a 3 (9178, 1280).
+                sc[0, :3] = sc[0, 5:] = -1.0  # every x seen so far, in every place, is 3xxx (a 2 here made a spot of 2137, 1348)
+                if last == 8:
+                    sc[4, 0] = sc[4, 5:] = -1.0
                 d = sc.argmax(axis=1)
                 top = sc.max(axis=1)
-                r = (int("".join(map(str, d[:4]))), int("".join(map(str, d[4:]))), min(float(top.mean()), float(top.min()) + 0.2))
+                kept = top[:last]
+                r = (int("".join(map(str, d[:4]))), int("".join(map(str, d[4:last]))), min(float(kept.mean()), float(kept.min()) + 0.2))
             if best_read is None or r[2] > best_read[2]:
                 best_read, hit = r, ((x0 + bx - gx) / gw, (y0 + by - gy) / gh)
     return None if best_read is None else (best_read, hit)
@@ -1132,9 +1344,12 @@ def hp_fraction(rgb: np.ndarray) -> float | None:
             best.append((int(y), int(starts[k]), int(ends[k])))
     # The bar is the thickest block of such rows; a piece of a skill's arc
     # above it is thin.
+    # The numbers on the bar cut its middle rows short: a bar in two pieces
+    # read as a thin one, the HP looked for below its own bar and found empty
+    # (a living character taken for dead, 22:09).
     groups: list[list] = []
     for t in best:
-        if groups and t[0] - groups[-1][-1][0] <= 2:
+        if groups and t[0] - groups[-1][-1][0] <= HP_BAR_GAP:
             groups[-1].append(t)
         else:
             groups.append([t])
@@ -1335,12 +1550,21 @@ class Follower:
         self.yaw = 0.0  # radians turned to the right since the start, for finding a place round the character again
         self.compass = None  # (heading in the coordinates, yaw then): the way the camera looked on the last straight run
         self.spot_yaw = None  # yaw when the macro was started: the way to face at the spot
+        self.kills = int(saved.get("kills", 0))  # Gamekeepers killed since the macro was started at this spot (shown in the panel)
+        self.deaths = [str(d) for d in saved.get("deaths", [])]  # the times the character died since then
+        self.stats_spot = None  # where these were counted
+        self.kill_due = None  # when he went from close by: killed, if nothing shoots for KILL_SURE s
+        self.died_at = 0.0
         saved_to = saved.get("revive_to")
         self.revive_to = (int(saved_to[0]), int(saved_to[1])) if isinstance(saved_to, list) and len(saved_to) == 2 else None  # where to walk back after reviving
-        self.revive_tried = self.revive_logged = self.revive_poked = 0.0
+        self.revive_tried = self.revive_logged = self.revive_poked = self.revive_look = 0.0
         self.pos = None  # (x, y) game coordinates, last trusted reading
+        self.still = (None, 0)  # a weak reading and how many times running
         self.pos_read = self.pos_time = 0.0
         self.far = []  # strong readings that do not fit the last position
+        self.start_read = None  # (x, y): a fair plain reading before the position was known and before any chase: where the macro was started
+        self.chased_unplaced = False  # a chase began before the spot was known: the spot is not where the chase got to
+        self.leap = None  # (x, y, when): a reading too far from the last for the time, until the next one bears it out
         self.jumped = None  # (from, to) when the character was moved far, until handled
         self.reads = [0, 0, 0.0]  # readings, trusted ones, time of the last report
         self.anchor = None  # where the macro was started: the spot, and the middle of the range
@@ -1369,6 +1593,12 @@ class Follower:
         self.macro_checked = -10.0  # check at the first step
         self.polled = None  # the instance's state, once the background check has it
         self.range = KEEPER_RANGE
+        self.keeper_big = False
+        self.brake_mark = None
+        self.brake_off = 0.0
+        self.side_logged = 0.0
+        self.back_due = False  # a chase ended: it still has to go back to the spot
+        self.keeper_touch = 0.0  # when he last stood right by the character
         self.sound = True  # the alarm at death (a button in the panel)
         self.mobs = []  # taught mobs (MOBS_FILE), reread when the file changes
         self.mobs_mtime = -1.0
@@ -1466,7 +1696,7 @@ class Follower:
 
     def save(self) -> None:
         with open(self.state_file, "w") as f:
-            json.dump({"spot": self.anchor and list(self.anchor), "macro_at": self.macro_at, "revive_to": self.revive_to and list(self.revive_to), "upr_cal": round(self.upr, 1), "calibrated": self.calibrated}, f)
+            json.dump({"spot": self.anchor and list(self.anchor), "macro_at": self.macro_at, "revive_to": self.revive_to and list(self.revive_to), "upr_cal": round(self.upr, 1), "calibrated": self.calibrated, "kills": self.kills, "deaths": self.deaths}, f)
 
     def poll(self) -> None:
         state = instance_state(self.instance)
@@ -1496,9 +1726,16 @@ class Follower:
         r = None
         if self.pos is not None:
             r = read_coords(rgb, near=self.pos, reach=min(60, round(12 + 8 * (now - self.pos_time))))
-            if r is not None and r[2] >= COORD_NEAR_MIN:
-                self.pos, self.pos_time, self.far = (r[0], r[1]), now, []
-                self.reads[1] += 1
+            plain = read_coords(rgb) if r is not None and COORD_NEAR_MIN <= r[2] < COORD_NEAR_SURE else None
+            if plain is not None and plain[2] >= COORD_ALONE_MIN and plain[2] > r[2] and plain[:2] != r[:2]:
+                # Bent to the last place: 1261 on the screen read 1361 at 0.76 for
+                # minutes, 0.86 plainly, while it ran off and thought itself home (08:57).
+                self.note_far(plain, now)
+                r = plain
+            elif r is not None and r[2] >= COORD_NEAR_MIN:
+                if self.borne_out((r[0], r[1]), now):
+                    self.pos, self.pos_time, self.far = (r[0], r[1]), now, []
+                    self.reads[1] += 1
                 r = None
             else:
                 r = read_coords(rgb)
@@ -1506,20 +1743,48 @@ class Follower:
                     self.note_far(r, now)
         else:
             r = read_coords(rgb)
+            if r is not None and r[2] >= COORD_START_MIN and max(r[0], r[1]) <= COORD_MAX and self.start_read is None and not self.chasing and self.walking is None:
+                self.start_read = (r[0], r[1])
             if r is not None and r[2] >= COORD_ALONE_MIN:
                 self.note_far(r, now)
+            elif r is not None and r[2] >= COORD_STILL_MIN:
+                self.note_still(r, now)
         if now - self.reads[2] > 10:
             log("pos", pos=self.pos and list(self.pos), reads=self.reads[0], trusted=self.reads[1], last=r and [r[0], r[1], round(r[2], 2)], hp=self.hp_last and round(self.hp_last, 2), fps=round(self.frames / max(now - self.frames_from, 0.1), 1), ms=[round(1000 * p / max(self.frames, 1)) for p in self.parts], worst=round(self.worst, 2))
             self.frames, self.frames_from, self.parts, self.worst = 0, now, [0.0, 0.0, 0.0, 0.0], 0.0
             self.reads = [0, 0, now]
 
+    def borne_out(self, xy: tuple[int, int], now: float) -> bool:
+        """A reading farther than a run could take it since the last one counts
+        once the next agrees: one 1360 read as 1380 sent it walking off the spot (08:56)."""
+        if math.hypot(xy[0] - self.pos[0], xy[1] - self.pos[1]) <= 3 + 1.2 * RUN_SPEED * (now - self.pos_time):
+            self.leap = None
+            return True
+        if self.leap is not None and math.hypot(xy[0] - self.leap[0], xy[1] - self.leap[1]) <= 3 + 1.2 * RUN_SPEED * (now - self.leap[2]):
+            self.leap = None
+            return True
+        self.leap = (xy[0], xy[1], now)
+        return False
+
+    def note_still(self, r: tuple[int, int, float], now: float) -> None:
+        """Nothing known yet and a weak reading, the same again and again: the
+        character stands there. Digits next to a 1 fit badly: 3141, 1360 went
+        unread for 11 minutes, the spot unsaved until a fight (22:52)."""
+        xy = (r[0], r[1])
+        self.still = (xy, self.still[1] + 1 if self.still[0] == xy else 1)
+        if self.still[1] >= COORD_STILL and max(xy) <= COORD_MAX:
+            self.pos, self.pos_time, self.far = xy, now, []
+            self.reads[1] += 1
+
     def note_far(self, r: tuple[int, int, float], now: float) -> None:
         xy = (r[0], r[1])
         if max(xy) > COORD_MAX:
             return  # a 3 read as a 9: no place on the map is that far out
-        self.far = (self.far + [xy])[-3:]
+        self.far = (self.far + [(xy[0], xy[1], now)])[-3:]
         need = 3
-        if len(self.far) >= need and all(abs(a[0] - xy[0]) + abs(a[1] - xy[1]) <= 4 for a in self.far[-need:]):
+        # Running, three readings in a row are some way apart: at 4 units it
+        # never believed one and stood on an old place for 12 s (vm2 09:26).
+        if len(self.far) >= need and all(math.hypot(a[0] - xy[0], a[1] - xy[1]) <= 4 + 1.2 * RUN_SPEED * (now - a[2]) for a in self.far[-need:]):
             # Far off, that is the respawn in the camp after a death.
             if self.pos is not None and math.hypot(xy[0] - self.pos[0], xy[1] - self.pos[1]) > 100:
                 self.jumped = (self.pos, xy)
@@ -1579,8 +1844,9 @@ class Follower:
                 # No blind first stretch: the way it looks is known from the last run.
                 err = wrap(math.atan2(hy - y, hx - x) - (self.compass[0] - (self.yaw - self.compass[1])))
                 if abs(err) > math.radians(20):
-                    self.turn(-err, min(0.6, 0.15 + abs(err) / 4), now)
-                    self.heading_wait = now + HEADING_LAG
+                    seconds = self.home_turn_time(err)
+                    self.walk_turn(-err, seconds, now)
+                    self.heading_wait = now + HEADING_LAG + seconds
             self.inp.key(KEY_W, True)
             self.walking, self.walk_from = now, (x, y)
             self.heading_from = (x, y, now)
@@ -1589,9 +1855,13 @@ class Follower:
             self.heading_from = (x, y, now)  # the last turn is still on its way to the picture
             return
         fx, fy, ft = self.heading_from
-        if math.hypot(x - fx, y - fy) < 6.0:
+        moved = math.hypot(x - fx, y - fy)
+        if moved < HEADING_RUN:
             if now - ft > 4.0:
                 self.go_round(now)
+            return
+        if moved > (now - ft + 0.5) * 1.5 * RUN_SPEED:
+            self.heading_from = (x, y, now)  # no run is that fast: a misread, and a way made of it would be anything
             return
         if now < self.detour_until:
             self.heading_from = (x, y, now)  # walking on round the obstacle
@@ -1603,13 +1873,26 @@ class Follower:
         if abs(err) > math.radians(45):
             self.stop()  # a wide curve at that speed misses the spot altogether: turn standing
         if abs(err) > math.radians(20):
-            seconds = min(0.8, 0.2 + abs(err) / 3)
+            seconds = self.home_turn_time(0.9 * err)
             # The coordinates count angles the other way round from the mouse.
-            self.turn(-0.9 * err, seconds, now)
+            self.walk_turn(-0.9 * err, seconds, now)
             self.heading += 0.9 * err
             self.home_turns += 1
             self.heading_wait = now + HEADING_LAG + seconds
             log("home-turn", pos=[x, y], err=round(math.degrees(err)), left=round(left))
+
+    def walk_turn(self, angle: float, seconds: float, now: float) -> None:
+        """A turn on the way back. With the macro off nothing clicks, and Parsec
+        drops mouse turns until it sees a click: at 23:06 they moved nothing
+        at all, and the character went off anywhere."""
+        if now - self.captured_at > WALK_CLICK:
+            self.recapture()
+        self.turn(angle, seconds, now)
+
+    def home_turn_time(self, angle: float) -> float:
+        """Seconds for a turn on the way back. The loop stands still meanwhile:
+        slower turns did not help the walk and left it blind for over a second."""
+        return min(0.8, 0.2 + abs(angle) / 3)
 
     def face_spot(self) -> None:
         """At the spot, back the way it faced when the macro was started: the
@@ -1656,6 +1939,12 @@ class Follower:
             if math.hypot(x - fx, y - fy) >= 1.5:
                 self.heading = math.atan2(y - fy, x - fx)
                 self.step_stuck = 0
+            elif left <= HOME_CLOSE:
+                # A step this short often shows no whole unit of change: it was
+                # taken for a rock, the step aside went 5 units off and the walk
+                # ended 30 away (08:56, 2 units from the spot).
+                self.end_walk(True)
+                return
             else:
                 self.step_stuck += 1
                 if self.step_stuck >= 2:  # a body or a rock: step aside
@@ -1673,8 +1962,7 @@ class Follower:
         if self.heading is not None:
             err = wrap(math.atan2(hy - y, hx - x) - self.heading)
             if abs(err) > math.radians(15):
-                seconds = min(0.8, 0.2 + abs(err) / 3)
-                self.turn(-0.9 * err, seconds, now)
+                self.walk_turn(-0.9 * err, self.home_turn_time(0.9 * err), now)
                 self.heading += 0.9 * err
                 self.home_turns += 1
                 log("home-turn", pos=[x, y], err=round(math.degrees(err)), left=round(left))
@@ -1708,6 +1996,14 @@ class Follower:
         self.inp.click(hit[0], hit[1])
         log("revive-click", at=[hit[0], hit[1]], score=round(hit[2], 2))
 
+    def dead_shown(self, rgb: np.ndarray, now: float) -> bool:
+        """The HP bar reads empty and the death window says so: at 22:03 a
+        misread bar alone took a living character for dead and stopped the macro."""
+        if self.dead or self.hp_empty is None or now - self.hp_empty < 2.0 or now < self.revive_look:
+            return False
+        self.revive_look = now + 0.5
+        return now - self.hp_empty >= DEAD_UNSEEN or find_revive(rgb) is not None
+
     def check_alive(self, rgb: np.ndarray, now: float) -> bool:
         """False while the character lies dead: its HP bar empty for two
         seconds. Then nothing moves, and the macro is stopped (it would only
@@ -1720,7 +2016,9 @@ class Follower:
                 hp = None
             elif hp is not None:
                 self.hp_odd = 0
-            if hp is not None:
+            if hp is None:
+                self.hp_empty = None  # empty it has to read all along: one bad read lasted 9 s (22:09)
+            else:
                 if self.hp_last is not None and hp < self.hp_last - 0.005:
                     self.hp_fell = now
                     if self.hp_last - hp >= HP_SHOT:
@@ -1747,8 +2045,12 @@ class Follower:
                         log("alive", hp=round(hp, 2))  # the player takes it from here
                         self.revive_to = None
                         self.save()
-        if not self.dead and self.hp_empty is not None and now - self.hp_empty >= 2.0:
+        if self.dead_shown(rgb, now):
             self.dead = True
+            self.died_at = now
+            self.kill_due = None
+            if self.revive_to is None:  # not the same death again after a restart of the guard
+                self.deaths = (self.deaths + [time.strftime("%H:%M")])[-20:]
             # Working when it died (the macro on, or the bot walking it with
             # the macro off): revive it. Kept in the file, so a restart of the
             # guard still knows.
@@ -1841,7 +2143,7 @@ class Follower:
                 angle = 0.85 * aside
         self.stop()
         self.sweep = None
-        self.sweep_ended, self.next_sweep = now, now + SWEEP_EVERY
+        self.next_sweep = now + SWEEP_EVERY  # not sweep_ended: a turn of 80 degrees is no look round, and it held one off under fire for 5 s (23:10)
         self.turn(angle, 0.2, now)
         self.behind_at = now
         log("seek", turn=round(math.degrees(angle)))
@@ -1874,11 +2176,11 @@ class Follower:
             elif ahead >= 0:
                 angle = math.atan2(dx, ahead)
             elif abs(dx) < 120:
-                angle = math.copysign(math.radians(120), dx or 1)  # between it and the camera: at its back
+                angle = math.copysign(math.radians(75), dx or 1)  # between it and the camera: at its back
             else:
-                # Nearer the camera than the character, his feet say a turn of
-                # 100 degrees where 50 do: he went from side to side of the
-                # picture with every frame. What a turn moves him is measured.
+                # Nearer the camera than the character a degree of turn moves
+                # him anything from 8 to 20 px: in steps, each looked at, or he
+                # goes from side to side of the picture (it died so at 20:35).
                 angle = math.radians(max(-70.0, min(70.0, dx / KEEPER_NEAR_PX)))
         else:
             angle = math.atan2(dx, REF_Y - dy)
@@ -1897,8 +2199,15 @@ class Follower:
         else:
             ahead = now >= self.next_turn and abs(angle) <= FRONT + math.radians(15 if self.walking is not None else 0)
         if self.walking is not None:
+            # The macro presses the button anew at the start of every pass, some
+            # 10 s apart: with W held the character then stands on the spot and
+            # dies (22:17, 11:53, 12:01). So not only at the start of a run.
+            if keeper and self.inp.button_held():
+                self.inp.button(False)
+                self.button_freed = True
+                log("button-up", dist=round(d))
             self.walk_min = min(self.walk_min, d)
-            if self.walk_from and self.pos and now - self.walking > 2.5 and self.pos_time > self.walking + 1.5 \
+            if self.walk_from and self.pos and now - self.walking > (1.5 if keeper else 2.5) and self.pos_time > self.walking + (0.8 if keeper else 1.5) \
                     and math.hypot(self.pos[0] - self.walk_from[0], self.pos[1] - self.walk_from[1]) <= 1:
                 self.stop()
                 if keeper:
@@ -1924,15 +2233,37 @@ class Follower:
                 time.sleep(0.25)
                 self.inp.key(KEY_W, False)
             return
-        if keeper and d < KEEPER_STEP:
-            # Near (he may also stay off and shoot): short steps, each looked
-            # at, or the character runs past him.
+        if keeper and d < KEEPER_STEP and (self.keeper_big or now - self.numbers_at < NUMBERS_HOLD):
+            # Tall on the screen, or blows landing: short steps, each looked at,
+            # or the character runs past him (22:27). Else it runs on, however near he looks:
+            # how near goes with the camera, and short steps do not move a
+            # character the macro roots (19 s, 4 m off him, at 22:17).
             if self.walking is not None and now - self.walking >= 0.3:
                 self.stop()
                 self.step_until = now + 0.8  # the macro's button is back: time for a swing
                 return
             if now < self.step_until or abs(angle) > KEEPER_AIM:
                 self.stop()  # a step not at him only takes the macro's button off him
+                return
+        elif keeper and d < KEEPER_BRAKE and now >= self.brake_off:
+            # At full speed, with the picture behind, it goes through him in half
+            # a second (01:33: dead on target for 7 s and out the other side,
+            # twice): runs short enough to look at where he is between them.
+            # Short runs do not move a character the macro or the crowd holds
+            # (11:53: 8 s at 330 px, shot dead): no nearer, then it runs on.
+            if self.brake_mark is None or now - self.brake_mark[1] > 2 * BRAKE_CHECK:
+                self.brake_mark = (d, now)
+            elif now - self.brake_mark[1] >= BRAKE_CHECK:
+                if self.brake_mark[0] - d < BRAKE_GAIN:
+                    self.brake_off = now + BRAKE_FREE
+                    log("brake-off", dist=round(d))
+                self.brake_mark = (d, now)
+            if self.walking is not None and now - self.walking >= BRAKE_RUN:
+                self.stop()
+                self.step_until = now + BRAKE_LOOK
+                return
+            if now < self.step_until:
+                self.stop()
                 return
         if d > near and ahead and (keeper or not self.out_of_range()):  # he is hunted wherever he stands
             if self.walking is None:
@@ -2055,9 +2386,12 @@ class Follower:
             return True  # one more look to be sure, with the camera held still: he is in view
         if keeper:  # a glimpse only counts this far when he is shooting or has been seen twice
             self.keeper_seen = now
+            self.kill_due = None
             hit = min(keeper, key=self.dist)
             if not self.chasing:
                 self.chasing, self.chase_from, self.chase_start = True, self.anchor or self.pos, now
+                if self.anchor is None:
+                    self.chased_unplaced = True
                 # Seen as the camera turned: the picture lags, so first see
                 # where it stops; he may need a step back.
                 self.back_step = self.sweep is not None and now < self.next_turn
@@ -2079,15 +2413,33 @@ class Follower:
             dx = self.where(hit)[0]
             feet = keeper_feet(rgb, hit)
             name_y = self.where(hit)[1]
+            self.keeper_big = feet - name_y >= KEEPER_BIG
+            far_off = False
             if name_y < KEEPER_NAME_FAR:
                 # High on the screen he is far ahead: what shows under his name
                 # is the crowd before him, and his feet are not to be found.
+                far_off = feet - name_y < KEEPER_SMALL
                 feet = name_y + KEEPER_NAME_FEET
+                if far_off:
+                    # How high a name shows goes with the tilt of the camera,
+                    # how tall he shows does not: with the camera level he looked
+                    # right by and it stood hitting the air for 5 s (20:45).
+                    feet = min(feet, CHAR_FEET - KEEPER_NEAR_FROM - 1)
             self.keeper_d = math.hypot(dx, CHAR_FEET - feet)
-            if feet > CHAR_FEET:
+            if far_off:
+                # The stand-in above says "far", not how far: at 421 he fell inside
+                # KEEPER_BRAKE and it came on in short steps from anywhere.
+                self.keeper_d = max(self.keeper_d, KEEPER_BRAKE + 1)
+            if feet > CHAR_FEET and abs(dx) < KEEPER_TOUCH_DX:
                 # Nearer the camera than the character: he is right by it,
                 # however wide the picture shows him. Walking takes the macro's
                 # button off him; on a film it ran 6 units away, not hitting.
+                self.keeper_d = min(self.keeper_d, KEEPER_STAND - 10)
+                self.keeper_touch = now
+            elif now - self.keeper_touch < KEEPER_HOLD:
+                # His feet read anything from frame to frame up close, at night
+                # above all: every run this set off took the macro's button
+                # off him (00:12, 00:21: at him within 3 s and dead all the same).
                 self.keeper_d = min(self.keeper_d, KEEPER_STAND - 10)
             self.chase_frame(rgb, now, dx=round(dx), feet=round(feet), d=round(self.keeper_d))
             self.approach("gamekeeper", dx, feet, self.keeper_d, KEEPER_REACH, now)
@@ -2109,15 +2461,19 @@ class Follower:
             # His name drops out of a frame now and then, or off its top edge
             # from afar: run on the same way, unless he was close: then he is
             # dead, or just about passed.
-            if now - self.keeper_seen > (0.2 if self.keeper_d < KEEPER_CLOSE else KEEPER_GONE):
-                self.stop()
+            if now - self.keeper_seen > (0.2 if self.keeper_d < KEEPER_BRAKE else KEEPER_GONE):
+                self.stop()  # this near no running on blind: it went 20 units past him (01:40)
             if now - self.keeper_seen > KEEPER_GONE or now - self.chase_start > CHASE_MAX:
                 self.chasing = False
+                self.back_due = True
+                if self.keeper_d < KEEPER_BRAKE:
+                    self.kill_due = now
                 self.stop()
-                if now - self.hp_fell < KEEPER_SHOOTS and now - self.sweep_ended > SHOT_REST:
-                    self.look_out = True  # alive and shooting: find him, no walking off under fire
+                lost = self.keeper_d >= KEEPER_CLOSE  # gone from afar: not dead, only out of the picture
+                if (lost or now - self.hp_fell < KEEPER_SHOOTS) and now - self.sweep_ended > SHOT_REST:
+                    self.look_out = True  # alive: find him, no walking off (it did, at 01:19, having hit him)
                     self.start_sweep("hurt", now)
-                elif now - self.shot_at >= SHOT_REST and self.pos is not None and self.chase_from is not None and math.hypot(self.pos[0] - self.chase_from[0], self.pos[1] - self.chase_from[1]) > HOME_OK:
+                elif now - self.shot_at >= SHOT_REST and not lost and self.pos is not None and self.chase_from is not None and math.hypot(self.pos[0] - self.chase_from[0], self.pos[1] - self.chase_from[1]) > HOME_OK:
                     self.begin_home(self.chase_from, "keeper-gone", now)
             return True
         return False
@@ -2135,7 +2491,9 @@ class Follower:
         for b in self.spot_bars:
             if b[1] < BAR_LOWEST and math.hypot(b[0], b[1] - CHAR_DY) < BAR_NEAR:
                 mimics.append({"dx": b[0], "dy": b[1]})
-        by_me = any(abs(self.where(h)[0]) <= HIT_DX and self.dist(h) <= HIT_DIST for h in mimics)
+        # By the angle round the character: in a straight strip a Mimic at its
+        # side counted as before it, and nothing turned to it (vm1, 10:49).
+        by_me = any(abs(math.atan2(self.where(h)[0], REF_Y - self.where(h)[1])) <= MIMIC_FRONT and self.dist(h) <= HIT_DIST for h in mimics)
         hitting = now - self.numbers_at < NUMBERS_HOLD
         under_blows = now - self.hp_fell < HIT_RECENT
         if by_me and hitting and self.hp_last is not None and 0.01 < self.hp_last < HEAL_AT and now >= self.skill_next:
@@ -2167,6 +2525,17 @@ class Follower:
             self.start_sweep("hurt" if shot else "cleared" if cleared else "keeper", now)
             return
         shot_lately = now - self.shot_at < SHOT_REST  # no turning away, no walking off from him
+        close_by = [self.where(m) for m in mimics if self.dist(m) < MIMIC_CLOSE]
+        if close_by and now >= self.side_logged and not any(abs(math.atan2(x, REF_Y - y)) <= MIMIC_FRONT for x, y in close_by):
+            self.side_logged = now + 1.5
+            log("mimic-side", at=[[round(x), round(y)] for x, y in close_by[:3]], numbers=round(now - self.numbers_at, 1), turn_in=round(self.next_turn - now, 1), quiet_in=round(self.quiet_until - now, 1), want=self.want_since and round(now - self.want_since, 1), blows=under_blows, by_me=by_me)
+        if self.back_due and not shot_lately and now - self.keeper_seen >= BACK_WAIT:
+            # Back after him with mobs about too: they come to the spot and no
+            # other place, and new ones keep it from ever being clear (01:01).
+            self.back_due = False
+            if self.off_spot() > HOME_OK and self.returning is None:
+                self.begin_home(self.anchor, "after-keeper", now)
+                return
         if (by_me or under_blows) and not hitting and self.seek(mimics, now):
             return
         if not mimics:
@@ -2180,17 +2549,32 @@ class Follower:
                 log("none-in-view", wait=MIMIC_RESPAWN)
             return
         self.lost_since = None
-        if by_me:
+        hit = min(mimics, key=self.dist)
+        close = self.dist(hit) < MIMIC_CLOSE  # the wait for the respawn is over: they are here
+        # Numbers only hold it back from a far one. Close by, with nobody in
+        # front, it turns whatever numbers show: they showed all along with
+        # Mimics at its side and not one before it (10:52).
+        if by_me or (not close and now - self.numbers_at < MIMIC_HOLD):
             self.want_since = None
             return
         self.want_since = self.want_since or now
-        if now - self.want_since >= MIMIC_REACT and now >= self.next_turn and now >= self.quiet_until:
+        if now - self.want_since >= MIMIC_REACT and now >= self.next_turn and (close or now >= self.quiet_until):
             # Like a player noticing: smoothly, a little short of the name.
-            hit = min(mimics, key=self.dist)
-            dx, _ = self.where(hit)
-            angle = math.atan2(dx, KEEPER_FOCAL)
-            self.turn(0.85 * angle, min(0.22, 0.08 + abs(angle) / 6), now)
-            self.next_turn = time.time() + TURN_REST
+            dx, dy = self.where(hit)
+            if close:
+                # Round the character, as far off as they stand: by the picture
+                # alone one at its side, near its back, gets only 9 degrees.
+                aside = math.atan2(dx, REF_Y - dy)
+                if any(abs(math.atan2(self.where(m)[0], REF_Y - self.where(m)[1])) <= FRONT and self.dist(m) < MIMIC_CLOSE for m in mimics):
+                    return  # one stands before it: that is the one to hit, the macro's next blow
+                angle = MIMIC_TURN * aside  # a quick mouse carries further than it should: at 0.85 it went from side to side (10:54)
+                self.turn(angle, min(0.22, 0.08 + abs(angle) / 6), now)
+                self.next_turn = time.time() + MIMIC_CLOSE_REST  # time for a blow to show, or it spins from side to side of a crowd
+                log("mimic-turn", turn=round(math.degrees(angle)), dx=round(dx), dy=round(dy))
+            else:
+                angle = math.atan2(dx, KEEPER_FOCAL)
+                self.turn(0.85 * angle, min(0.22, 0.08 + abs(angle) / 6), now)
+                self.next_turn = time.time() + TURN_REST
 
     # ---------------------------------------------------------- level mode
 
@@ -2305,7 +2689,9 @@ class Follower:
             threading.Thread(target=self.poll, daemon=True).start()
         state, self.polled = self.polled, None
         if state is not None:
-            on = state.get("macroState") == "running"
+            # A status asked for before a death comes after it: "running" then
+            # made a new spot of the camp and wiped the count (15:44).
+            on = state.get("macroState") == "running" and now - self.died_at >= STATUS_LATE
             new_range = float(state.get("range", KEEPER_RANGE))
             if new_range != self.range:
                 log("range", metres=new_range)
@@ -2316,6 +2702,7 @@ class Follower:
                 log("follow", macro=on)
                 if on and not self.resumed:
                     self.anchor = None  # the macro starts at the spot
+                    self.start_read, self.chased_unplaced = None, False
                     self.spot_yaw = self.yaw  # and that is the way to face there
                     # The very run of the macro the spot was saved with: only the
                     # guard was restarted, the spot is still where that run began.
@@ -2325,6 +2712,9 @@ class Follower:
                         self.keep_spot = True
                 if on:
                     self.recapture()
+                    if not self.resumed and not self.keep_spot:
+                        tries, done = self.inp.set_camera()
+                        log("camera", tries=tries, done=done)
                 self.resumed = False
             self.started = True
             if on and state.get("macro_at") and state["macro_at"] != self.macro_at:
@@ -2368,12 +2758,25 @@ class Follower:
             return
         if self.anchor is None and self.pos is not None and self.macro_on:
             kept = self.keep_spot and math.hypot(self.pos[0] - self.saved_spot[0], self.pos[1] - self.saved_spot[1]) <= 40
-            self.anchor = self.saved_spot if kept else self.pos
+            self.anchor = self.saved_spot if kept else self.start_read if self.chased_unplaced and self.start_read else self.pos
+            self.start_read, self.chased_unplaced = None, False
+            # A new start of the macro clears the count; back at the same spot
+            # after a death it would wipe the very time it is there to show.
+            same = self.stats_spot or self.saved_spot
+            if not kept and not (self.deaths and same and math.hypot(self.anchor[0] - same[0], self.anchor[1] - same[1]) <= STATS_SAME):
+                self.kills, self.deaths = 0, []
+            self.stats_spot = self.anchor
             self.keep_spot = False
             self.save()
             self.next_sweep = now + SWEEP_EVERY
             log("spot", pos=list(self.anchor), range=self.range, kept=kept)
         self.note_numbers(rgb, now)
+        if self.kill_due is not None and now - self.kill_due >= KILL_SURE:
+            if now - self.shot_at >= KILL_SURE:
+                self.kills += 1
+                log("keeper-killed", kills=self.kills)
+                self.save()
+            self.kill_due = None
         if self.keeper_step(rgb, keeper, now) and self.returning is None:
             return
         if self.returning is not None:
@@ -2562,7 +2965,7 @@ def main() -> int:
         return 2
     follower = Follower(Input(screen), instance, mode=mode) if instance else None
     if follower:
-        interval = min(interval, 0.04)
+        interval = min(interval, 0.033)
 
         def quit_(*_: object) -> None:
             follower.inp.release()  # never leave W held down
