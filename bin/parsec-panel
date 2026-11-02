@@ -141,8 +141,11 @@ status() {
     [[ -n $macro && -r $macro_dir/$macro.json ]] && macro_known=1
     local seen=""
     [[ -n $disp ]] && seen=$(grep -o '"event": "seen", "time": "[0-9:]*"' "$LOGDIR/guard-$n.log" 2>/dev/null | tail -n 1 | grep -o '[0-9:]*"$' | tr -d '"')
+    local stats
+    stats=$(jq -c '{kills: (.kills // 0), deaths: (.deaths // [])}' "$LOGDIR/guard-$n.json" 2>/dev/null) || stats=""
+    [[ -n $stats ]] || stats='{"kills":0,"deaths":[]}'
     out=$(jq -c --argjson e "$e" --arg pid "$pid" --argjson conn "$conn" --arg host "$host" \
-      --argjson guards "$guards" --arg seen "$seen" \
+      --argjson guards "$guards" --arg seen "$seen" --argjson stats "$stats" \
       --argjson wins "$wins" --arg loggedin "$([[ -s $base/user.bin ]] && echo 1 || echo 0)" \
       --argjson players "$players" --arg macro "$macro" --arg macro_known "$macro_known" --arg disp "$disp" '
       . + [ ($wins | map(select(.display == "" and (.pid | tostring) == $pid))[0] // {}) as $plain |
@@ -167,6 +170,8 @@ status() {
           guardSeen: (if $disp != "" and ($guards[$disp] // "") == "spot" then $seen else "" end),
           range: ($e.range // 15),
           sound: ($e.sound != false),
+          kills: $stats.kills,
+          deaths: $stats.deaths,
           loggedIn: ($loggedin == "1"),
           running: ($pid != ""),
           pid: ($pid | if . == "" then null else tonumber end),

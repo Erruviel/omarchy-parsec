@@ -480,6 +480,8 @@ Panel {
     readonly property bool macroOn: macroState === "running" || macroState === "waiting"
     readonly property bool hasMacro: running && macroState !== "" && macroState !== "missing"
     readonly property string guardMode: String(inst.guardMode || "")
+    readonly property int kills: Number(inst.kills || 0)
+    readonly property var deaths: inst.deaths || []
 
     // The name line with all its buttons, icons only (what each does is in its
     // tooltip); below it the range slider across the full width.
@@ -508,14 +510,48 @@ Panel {
       y: (row.topHeight - height) / 2
       spacing: 0
 
-      Text {
+      Item {
         width: parent.width
-        elide: Text.ElideRight
-        textFormat: Text.PlainText
-        text: String(row.inst.label || row.inst.name || "")
-        color: root.barForeground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
+        height: nameText.implicitHeight
+        clip: true
+
+        Text {
+          id: nameText
+          anchors.left: parent.left
+          width: Math.min(implicitWidth, parent.width - statsRow.implicitWidth - Style.space(8))
+          elide: Text.ElideRight
+          textFormat: Text.PlainText
+          text: String(row.inst.label || row.inst.name || "")
+          color: root.barForeground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        // Gamekeepers killed and the times of the last deaths since the macro
+        // was started at this spot: parsec-guard counts them.
+        Row {
+          id: statsRow
+          anchors.left: nameText.right
+          anchors.leftMargin: Style.space(8)
+          anchors.verticalCenter: nameText.verticalCenter
+          spacing: Style.space(6)
+
+          Text {
+            textFormat: Text.PlainText
+            text: "󰞇 " + Commons.I18n.formatNumber(row.kills)
+            color: root.barForeground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            text: "† " + (row.deaths.length > 0 ? row.deaths.slice(-3).reverse().join(" ") : "--:--")
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
       }
 
       Text {
