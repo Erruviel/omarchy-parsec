@@ -560,7 +560,8 @@ guard_stop() {
 }
 
 guard_toggle() {
-  local n=$1 mode=${2:-spot} disp
+  local n mode=${2:-spot} disp
+  n=$(resolve_name "$1") || exit 1
   valid_name "$n" || exit 1
   valid_mode "$mode" || fail "mode must be spot or level"
   disp=$(live_display_of "$n")

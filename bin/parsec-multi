@@ -11,6 +11,6 @@ S=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/parsec-panel
 [[ -x $S ]] || S="$HOME/.config/omarchy/plugins/erruviel.parsec/bin/parsec-panel"
 case ${1:-} in
   "") exec "$S" status ;;
-  status|edit|focus|focus-next|stop|launch|macro-start|macro-stop|macro-toggle|display|add|set|remove) exec "$S" "$@" ;;
+  status|edit|focus|focus-next|stop|launch|macro-start|macro-stop|macro-toggle|guard-toggle|display|add|set|remove) exec "$S" "$@" ;;
   *) exec "$S" launch "$1" ;;
 esac
